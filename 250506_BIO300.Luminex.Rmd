@@ -1,0 +1,4654 @@
+---
+title: "BIO300 Luminex"
+output: html_notebook
+---
+
+# Packages
+
+```{r message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(do)
+library("gplots")
+library("vegan")
+library("ade4")
+library("RColorBrewer")
+theme_set(theme_bw())
+library("reshape2")
+library("purrr")
+library("dendextend")
+library(factoextra)
+library(ggpubr)
+library(scales)
+library(pheatmap)
+library(ggalluvial)
+library(rstatix)
+library(lubridate)
+library(lemon)
+library(ggh4x)
+library(corrplot)
+library(tibble)
+library(gridExtra)
+library(fs)
+library(sva)
+
+
+# not in RNASeq
+library(readxl)
+library(writexl)
+library(reshape2)
+library(do)
+theme_set(theme_bw())
+library(purrr)
+library(dendextend)
+library(factoextra)
+library(scales)
+library(ggalluvial)
+library(lubridate)
+library(lemon)
+library(ggh4x)
+library(corrplot)
+library(tibble)
+library(gridExtra)
+
+# from LMM
+library(forcats)
+library(car)
+library(magrittr)
+library(lmerTest)
+library(rlang)
+library(ggeffects)
+library(foreign)
+library(nnet)
+library(stargazer)
+library(MASS)
+library(networkD3)
+library(emmeans)
+library(mgcv)
+```
+
+```{r}
+# save.image("250131_bio3.RData")
+# load("250131_bio3.RData")
+```
+
+# Load data
+
+```{r}
+# save.image("250506_BIO300.RData")
+load("250506_BIO300.RData")
+```
+
+
+# Luminex
+
+## Read in Reported results (excel)
+
+```{r message=FALSE, warning=FALSE}
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+  # I prefer straight data.frames, not default tibble
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_xlsx(filename, sheet = X, col_names = FALSE))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+
+# Have to extract the files
+# Define the folder path
+folder_path <- "Luminex_files/"
+
+# Rename the files
+all.files <- dir_ls(folder_path, glob = "*.xlsx")  # Get all xlsx files
+
+# separate the raw files from final res: only the final res has p1-p2 or p3-p5, raw files are 1 plate each
+keep.fin.res <- all.files[str_detect(names(all.files), "\\-")]
+## Filter allows you to apply a condition to each element in the list and return only the elements that satisfy the condition
+
+
+# Read all renamed files and their sheets
+bio3.sheets.file2 <- map(keep.fin.res, ~ read_excel_allsheets(.x))
+
+# Now pasc.lum is a list of lists: where each list is a file and the list elements in that list corresponds to the file's sheets
+
+
+# names(bio3.sheets.file2) <- c("P1.P2","P3.P5")
+
+```
+
+```{r}
+keep.raws <- all.files[!(str_detect(names(all.files), "\\-"))]
+
+raw.bios3.ls2 <- lapply(keep.raws, function(df){
+  as.data.frame(read_xlsx(df, col_names = FALSE))
+})
+
+# raw.bio3.5 <- as.data.frame(
+#   read_xlsx('Yonghua_20250206_TGFB_p5.xlsx', col_names=FALSE))
+# 
+# raw.bios3.ls2 <- list(raw.bio3.1, raw.bio3.2, raw.bio3.3, raw.bio3.4, 
+#                  raw.bio3.5)
+```
+
+```{r}
+# simplify the names
+names(bio3.sheets.file2) <- gsub(".*\\_S1", "S1", names(bio3.sheets.file2))
+names(raw.bios3.ls2) <- gsub(".*\\_S1", "S1", names(raw.bios3.ls2))
+
+names(bio3.sheets.file2) <- gsub(".*\\_fib", "fib", names(bio3.sheets.file2))
+names(raw.bios3.ls2) <- gsub(".*\\_fib", "fib", names(raw.bios3.ls2))
+
+names(bio3.sheets.file2) <- gsub(".*\\_adi", "adi", names(bio3.sheets.file2))
+names(raw.bios3.ls2) <- gsub(".*\\_adi", "adi", names(raw.bios3.ls2))
+
+names(bio3.sheets.file2)
+names(raw.bios3.ls2)
+
+```
+
+
+
+
+## Prep Reported Results
+
+### Extract equations
+
+```{r}
+eqns3 <- data.frame(Plate = character(), Analyte = character(), 
+                   Full.Equation = character(), 
+                   Equation = character())
+the.eq <- list()
+
+for (f in seq_along(bio3.sheets.file2)) {  # Loop over each file
+  file_name <- names(bio3.sheets.file2)[f]
+  
+  for (s in seq_along(bio3.sheets.file2[[f]])) {  # Loop over each sheet
+    sheet_name <- names(bio3.sheets.file2[[f]])[s]
+    df <- bio3.sheets.file2[[f]][[s]]  # Get the dataframe for the sheet
+
+# for (i in seq_along(bio3.sheets.file2)) {
+#   df <- bio3.sheets.file2[[i]]  # Extract the dataframe from the list
+  
+    # Check each element (rows, cols) for the pattern starting with ^ "y = "
+    the.eq[[s]] <- df[apply(df, c(1, 2), function(x) grepl("^y = ", x))]
+  
+    # only add the.eq to the df if it is not 0/NA/no.result - this excludes
+    # summary sheet which has no eqn
+      if (length(the.eq[[s]]) > 0) {
+        for (equation in the.eq[[s]]) {
+        new_row <- data.frame(
+          File = file_name,
+          Sheet = sheet_name,  # Get the name of the dataframe/Analyte
+          Full.Equation = equation,
+          Equation = sub("^y\\s*=\\s*", "", equation)  # Remove "y = " at the start
+        )
+        
+        eqns3 <- rbind(eqns3, new_row)
+      }
+  }
+}}
+
+# Print the resulting dataframe
+print(eqns3)
+
+# write.csv(eqns3, "250321_bio3.Lum.Equations.csv")
+
+```
+
+### My df of reported results
+
+Combining all results into 1 dataframe: file, sheet/analyte, Unk. Dilution, sample ID, avg res, res, Message, res cv (for analyte), mfi cv (for sample), Exclude, Exclude Reason
+```{r}
+# Initialize an empty list to store results
+results <- list()
+
+# Loop through each file and each sheet
+for (f in seq_along(bio3.sheets.file2)) {
+  file_name <- names(bio3.sheets.file2)[f]  # Get the file name
+  sheets <- bio3.sheets.file2[[f]]  # Access the list of sheets for this file
+  
+  for (s in seq_along(sheets)) {
+    sheet_name <- names(sheets)[s]  # Get the sheet name
+    df <- sheets[[s]]  # Access the specific sheet
+    
+    # Find indices for columns containing "Result CV" and "MFI CV"
+    loc_col <- which(grepl("Location", df, ignore.case = TRUE))
+    anly_col <- loc_col + 2 # the word "Analyte" shows up multiple times so just the col next to location col
+    dilu_col <- which(grepl("Unk. Dilution", df, ignore.case = TRUE))
+    sample_id_col <- which(grepl("Sample ID", df, ignore.case = TRUE))
+    avg_col <- which(grepl("Avg. Result", df, ignore.case = TRUE))
+    res_col <- avg_col + 1 # the word "Result" shows up multiple times so just the col next to avg res col
+    msg_col <- res_col + 1 # Message column
+    avg.mfi_col <- which(grepl("Avg. MFI", df, ignore.case = TRUE))
+    mfi_col <- avg.mfi_col + 1 # the word "MFI" shows up multiple times so just the col next to avg mfi col
+    result_cv_col <- which(grepl("Result CV", df, ignore.case = TRUE))
+    mfi_cv_col <- which(grepl("MFI CV", df, ignore.case = TRUE))
+    exc_col <- which(grepl("Exclude$", df, ignore.case = TRUE))
+    # $ ensures the match ends at the end of the string, so it will not match columns like "Exclude Reason"
+    exc_r_col <- which(grepl("Exclude Reason", df, ignore.case = TRUE))
+    
+    # Check if columns exist
+    if (length(avg_col) >0 || length(res_col) > 0 ||
+      length(result_cv_col) > 0 || length(mfi_cv_col) > 0) {
+      # Filter rows where either "Sample ID" != NA | contains "Background|Standard|Control|QC"
+      rows_to_check <- df %>%
+        filter((result_cv_col > 0) # actually has a result CV col, removes summary sheets
+                & (!is.na(df[[sample_id_col]])) # don't copy NA rows
+                 & (df[[sample_id_col]] != "Sample ID")
+                & (!grepl("Background|Standard|Control|QC", 
+                          df[[sample_id_col]], ignore.case = TRUE)))
+      
+      # Create a data frame with the required output
+      for (i in 1:nrow(rows_to_check)) {
+        sample_id <- rows_to_check[i, sample_id_col]
+        loctn <- ifelse(length(loc_col) > 0, rows_to_check[i, loc_col], NA)
+        anly <- ifelse(length(anly_col) > 0, rows_to_check[i, anly_col], NA)
+        dilu <- ifelse(length(dilu_col) > 0, 
+                       rows_to_check[i, dilu_col], NA)
+        avg <- ifelse(length(avg_col) > 0, rows_to_check[i, avg_col], NA)
+        res <- ifelse(length(res_col) > 0, rows_to_check[i, res_col], NA)
+        msg <- ifelse(length(msg_col) > 0, rows_to_check[i, msg_col], NA)
+        avg.mfi <- ifelse(length(avg.mfi_col) > 0, 
+                          rows_to_check[i, avg.mfi_col], NA)
+        mfi <- ifelse(length(mfi_col) > 0, rows_to_check[i, mfi_col], NA)
+        res_cv <- ifelse(length(result_cv_col) > 0, 
+                         rows_to_check[i, result_cv_col], NA)
+        mfi_cv <- ifelse(length(mfi_cv_col) > 0, rows_to_check[i, mfi_cv_col], NA)
+        excl <- ifelse(length(exc_col) > 0, rows_to_check[i, exc_col], NA)
+        excl_r <- ifelse(length(exc_r_col) > 0, rows_to_check[i, exc_r_col], NA)
+        
+        results <- append(results, list(data.frame(
+          File = file_name,
+          Sheet = sheet_name,
+          Location = loctn,
+          Analyte = anly,
+          Dilution = dilu,
+          Sample.ID = sample_id,
+          Avg.Res = avg,
+          Res = res,
+          Message = msg,
+          Avg.MFI = avg.mfi,
+          MFI = mfi,
+          Res.CV = res_cv,
+          MFI.CV = mfi_cv,
+          Exclude = excl,
+          Exclude.Reason = excl_r
+        )))
+      }
+    }
+  }
+}
+
+# Combine all results into a single data frame
+bio3.lum.all <- do.call(rbind, results)
+
+# unique(bio3.lum.all$Message)
+## check if there are rows with "Defects" in the "Message" col
+
+```
+
+Editing/cleaning the large dataframe
+```{r}
+# number rows
+bio3.lum.all2 <- bio3.lum.all
+bio3.lum.all2$Order <- 1:nrow(bio3.lum.all2)
+bio3.lum.all2 <- bio3.lum.all2[order(bio3.lum.all2$Order),]
+bio3.lum.all2 <- bio3.lum.all2 %>% relocate(Order, .before = File)
+
+## just filter out the titles in the res cols and then convert to numeric to filter
+bio3.lum.all2[bio3.lum.all2 == "-"] <- NA
+bio3.lum.all2$Res.CV <- as.numeric(bio3.lum.all2$Res.CV)
+bio3.lum.all2$Res.CV <- bio3.lum.all2$Res.CV *100
+bio3.lum.all2$MFI.CV <- as.numeric(bio3.lum.all2$MFI.CV)
+bio3.lum.all2$MFI.CV <- bio3.lum.all2$MFI.CV *100
+
+# remove extra rows at bottom from each sheet (formulas, etc.)
+# unique(bio3.lum.all$Location)
+bio3.lum.all2 <- bio3.lum.all2[bio3.lum.all2$Location != "Fit" &
+                                 bio3.lum.all2$Location != "5PL" &
+                                 bio3.lum.all2$Location != "4PL",]
+
+# write.csv(bio3.lum.all2,
+# "250324_bio3.Luminex.All.Res.Belysa.curated.csv")
+```
+
+### Add raw counts and Net MFI
+
+Extract the counts and net MFI from the "raw" sheets - csv before Belysa curation
+```{r message=FALSE, warning=FALSE}
+## WARNING: read.csv will just move all of the rows and cols to fill empty spaces
+
+# # read in raw data from xlsx format
+# raw.bio3.1 <- as.data.frame(
+#   read_xlsx('Yonghua_20250131_TGFB_p1.xlsx', col_names=FALSE))
+# raw.bio3.2 <- as.data.frame(
+#   read_xlsx('Yonghua_20250131_TGFB_p2.xlsx', col_names=FALSE))
+# raw.bio3.3 <- as.data.frame(
+#   read_xlsx('Yonghua_20250206_TGFB_p3.xlsx', col_names=FALSE))
+# raw.bio3.4 <- as.data.frame(
+#   read_xlsx('Yonghua_20250206_TGFB_p4.xlsx', col_names=FALSE))
+# raw.bio3.5 <- as.data.frame(
+#   read_xlsx('Yonghua_20250206_TGFB_p5.xlsx', col_names=FALSE))
+# 
+# raw.bios3.ls2 <- list(raw.bio3.1, raw.bio3.2, raw.bio3.3, raw.bio3.4, 
+#                  raw.bio3.5)
+
+```
+
+```{r}
+## add bead counts and net MFI from raw
+raw.bios3.ls2.ct <- lapply(raw.bios3.ls2, function(raw.bios){
+
+# find the row where counts and net MFI start
+counts.st <- which(apply(raw.bios, 1, function(row) any(row == "Count")))
+
+# find the row where it ends - first empty row (NA's) after the start
+## note: first index in counts.st is just part of the beginning summary, so use counts.st[2]
+## find the NA cols after counts.st, extract just the first NA [1] and minus 1 for counts.end
+counts.end <- which(is.na(raw.bios[,1]))[which(is.na(raw.bios[,1])) > counts.st[2]][1] -1
+
+raw.counts <- raw.bios[counts.st[2]:counts.end,]
+
+## save the chunk in a df, keep first row to double check, then delete "Count", make 1st row colnames, and delete 1st row again
+raw.counts <- raw.counts[-1,]
+colnames(raw.counts) <- raw.counts[1,]
+raw.counts <- raw.counts[-1,]
+
+# match the formats:
+# change Location in raw to same as Location in reported bio3.lum.all2
+
+# Use gsub to clean the Location column:
+## gsub(pattern to search for, replace with what, where are we looking)
+## pattern: in regular expressions, . (dot) symbol matches any single character except for newline characters
+## * (asterisk) means "zero or more" occurrences of the preceding element
+## certain characters have special meanings (e.g., (, ), .). To treat them literally (as regular characters), you need to escape them with a backslash, in R with a double backslash \\
+### .*\\, matches everything up to the last comma before the desired value
+### | is used to indicate "or," so it also matches \\) which is the closing parenthesis
+#### so the pattern is saying everything .* before and including the comma \\, OR | everything
+#### .* after and inc the closing parenthesis \\)
+raw.counts$Location <- gsub(".*\\,|\\).*", "", raw.counts$Location)
+
+return(raw.counts)
+
+})
+```
+
+```{r}
+# net MFI df
+
+raw.bios3.ls2.mfi <- lapply(raw.bios3.ls2, function(raw.bios){
+  
+# find the row where counts and net MFI start
+nmfi.st <- which(apply(raw.bios, 1, function(row) any(row == "Net MFI")))
+
+# find the row where it ends - first empty row (NA's) after the start
+## find the NA cols after nmfi.st, extract just the first NA [1] and minus 1 for counts.end
+nmfi.end <- which(is.na(raw.bios[,1]))[which(is.na(raw.bios[,1])) > nmfi.st][1] -1
+
+raw.nmfi <- raw.bios[nmfi.st:nmfi.end,]
+
+## save the chunk in a df, keep first row to double check, then delete "Count", make 1st row colnames, and delete 1st row again
+raw.nmfi <- raw.nmfi[-1,]
+colnames(raw.nmfi) <- raw.nmfi[1,]
+raw.nmfi <- raw.nmfi[-1,]
+
+# Use gsub to clean the Location column:
+raw.nmfi$Location <- gsub(".*\\,|\\).*", "", raw.nmfi$Location)
+
+return(raw.nmfi)
+
+})
+```
+
+```{r}
+# Initialize an empty list to store the combined data frames
+combined_list <- list()
+
+# Iterate over each element in the list of data frames
+for (i in seq_along(raw.bios3.ls2.ct)) {
+  df_name <- names(raw.bios3.ls2.ct)[i]
+  current_df <- raw.bios3.ls2.ct[[i]]
+  
+  # Find matching names based on the first 6 characters
+  matching_names <- grep(paste0("^", substr(df_name, 1, 6)), names(raw.bios3.ls2.ct), value = TRUE)
+  
+  # If there are matching names (other than itself), rbind the matching data frames
+  if (length(matching_names) > 0) {
+    # Get all matching dataframes from the list
+    matching_dfs <- raw.bios3.ls2.ct[matching_names]
+    
+    # Combine all matching data frames with rbind
+    combined_df <- do.call(rbind, matching_dfs)
+    
+    # Add the combined data frame to the combined list
+    combined_list[[df_name]] <- combined_df
+  }
+}
+
+
+# The list should now contain all the merged rows based on the first 6 characters
+
+```
+
+```{r}
+# check that each panel is merged properly: they have the same number of rows, and elements with the same first 6 characters contain the same elements, disregarding their order = setequal()
+lapply(combined_list, nrow)
+
+setequal(combined_list[[1]], combined_list[[10]])
+setequal(combined_list[[3]], combined_list[[7]])
+setequal(combined_list[[11]], combined_list[[15]])
+
+# merge the diff analytes
+combined.cnts <- merge(combined_list[[1]], combined_list[[3]],
+                       by=c("Location", "Sample"), all = TRUE)
+combined.cnts <- merge(combined.cnts, combined_list[[11]],
+                       by=c("Location", "Sample"), all = TRUE)
+
+# remove the NA cols
+# Identify columns whose names start with "NA"
+cols_to_remove <- grep("^NA", names(combined.cnts), value = TRUE)
+
+# Remove the columns starting with "NA"
+combined.cnts <- combined.cnts[, !(names(combined.cnts) %in% cols_to_remove)]
+
+# remove the total events cols
+# Identify columns whose names start with "NA"
+cols_to_remove <- grep("^Total", names(combined.cnts), value = TRUE)
+
+# Remove the columns starting with "NA"
+combined.cnts <- combined.cnts[, !(names(combined.cnts) %in% cols_to_remove)]
+
+# remove the last NA col
+combined.cnts <- combined.cnts[,-ncol(combined.cnts)]
+
+head(combined.cnts)
+
+```
+
+```{r}
+## now same for MFI
+
+# Initialize an empty list to store the combined data frames
+combined_list.mfi <- list()
+
+# Iterate over each element in the list of data frames
+for (i in seq_along(raw.bios3.ls2.mfi)) {
+  df_name <- names(raw.bios3.ls2.mfi)[i]
+  current_df <- raw.bios3.ls2.mfi[[i]]
+  
+  # Find matching names based on the first 6 characters
+  matching_names <- grep(paste0("^", substr(df_name, 1, 6)), names(raw.bios3.ls2.mfi), value = TRUE)
+  
+  # If there are matching names (other than itself), rbind the matching data frames
+  if (length(matching_names) > 0) {
+    # Get all matching dataframes from the list
+    matching_dfs <- raw.bios3.ls2.mfi[matching_names]
+    
+    # Combine all matching data frames with rbind
+    combined_df <- do.call(rbind, matching_dfs)
+    
+    # Add the combined data frame to the combined list
+    combined_list.mfi[[df_name]] <- combined_df
+  }
+}
+
+
+# The list should now contain all the merged rows based on the first 6 characters
+
+```
+
+```{r}
+# check that each panel is merged properly: they have the same number of rows, and elements with the same first 6 characters contain the same elements, disregarding their order = setequal()
+sapply(combined_list.mfi, nrow)
+
+identical(names(raw.bios3.ls2.ct), names(raw.bios3.ls2.mfi))
+# can use the same indices as for counts cuz identical
+
+setequal(combined_list.mfi[[1]], combined_list.mfi[[10]])
+setequal(combined_list.mfi[[3]], combined_list.mfi[[7]])
+setequal(combined_list.mfi[[11]], combined_list.mfi[[15]])
+```
+
+```{r}
+# merge the diff analytes
+combined.mfi <- merge(combined_list.mfi[[1]], combined_list.mfi[[3]],
+                       by=c("Location", "Sample"), all = TRUE)
+combined.mfi <- merge(combined.mfi, combined_list.mfi[[11]],
+                       by=c("Location", "Sample"), all = TRUE)
+
+# remove the NA cols
+# Identify columns whose names start with "NA"
+cols_to_remove <- grep("^NA", names(combined.mfi), value = TRUE)
+
+# Remove the columns starting with "NA"
+combined.mfi <- combined.mfi[, !(names(combined.mfi) %in% cols_to_remove)]
+
+# remove the total events cols
+# Identify columns whose names start with "NA"
+cols_to_remove <- grep("^Total", names(combined.mfi), value = TRUE)
+
+# Remove the columns starting with "NA"
+combined.mfi <- combined.mfi[, !(names(combined.mfi) %in% cols_to_remove)]
+
+# remove the last NA col
+combined.mfi <- combined.mfi[,-ncol(combined.mfi)]
+
+head(combined.mfi)
+
+```
+
+
+```{r}
+# 1 df for counts and 1 for mfi
+raw.cnts <- combined.cnts
+
+raw.mfi <- combined.mfi
+  
+```
+
+
+```{r}
+# delete NA cols and merge
+# colnames(raw.cnts)
+# raw.cnts <- raw.cnts[,-c(6:ncol(raw.cnts))]
+# raw.mfi <- raw.mfi[,-c(6:ncol(raw.mfi))]
+
+raw.cnts <- raw.cnts %>% rename("Sample.ID" = "Sample")
+raw.mfi <- raw.mfi %>% rename("Sample.ID" = "Sample")
+
+colnames(raw.cnts)
+```
+
+Match analyte names and add counts and MFI's to main file results
+
+```{r}
+# add cols for counts and raw net mfi
+
+bio3.lum.all.fin <- list()
+
+for (anly in unique(bio3.lum.all2$Analyte)) {
+     
+  df <- bio3.lum.all2 %>% filter(Analyte == anly)
+  
+     # Merge to add "Counts" column
+     bio3.lum.all.fin[[anly]] <- merge(df, 
+                                       raw.cnts[, c("Location", 
+                                                    "Sample.ID", 
+                                                    anly), 
+                                                drop = FALSE], 
+                                       by = c("Location", 
+                                              "Sample.ID"), 
+                                       all.x = TRUE)
+     # Rename the newly added column to "Counts"
+     colnames(bio3.lum.all.fin[[anly]])[ncol(bio3.lum.all.fin[[anly]])] <- paste("Counts")
+ 
+     # Merge to add "Net.MFI" column
+     bio3.lum.all.fin[[anly]] <- merge(bio3.lum.all.fin[[anly]], 
+                                       raw.mfi[, c("Location", 
+                                                   "Sample.ID",
+                                                   anly), 
+                                               drop = FALSE], 
+                                       by = c("Location", 
+                                              "Sample.ID"), 
+                                       all.x = TRUE)
+     # Rename the newly added column to "Net.MFI"
+     colnames(bio3.lum.all.fin[[anly]])[ncol(bio3.lum.all.fin[[anly]])] <- paste("Net.MFI")
+     
+
+   }
+
+
+# Combine all results into a single data frame
+bio3.lum.all.df <- do.call(rbind, bio3.lum.all.fin)
+```
+
+```{r}
+# re-format to my df
+rownames(bio3.lum.all.df) <- NULL
+bio3.lum.all.df <- bio3.lum.all.df %>% relocate(c("Order", "File"), 
+                                            .before = Location)
+bio3.lum.all.df <- bio3.lum.all.df[order(bio3.lum.all.df$Order),]
+
+```
+
+### Check reported cols
+
+```{r}
+# check for any </> BEFORE converting to numeric
+
+# Count the number of TRUE values where '<' or '>' appears in the 'Net.MFI' column
+## note: \\< is interpreted as a "word boundary," so it's matching any word boundary - gives the count of !is.na rther than <
+
+sum(grepl("<|>", bio3.lum.all.df$Net.MFI))
+```
+
+
+```{r}
+
+## NOTE: need to change cols to numeric first, but NOT Net MFI if I need the </>
+
+bio3.lum.all.df[,c("Dilution", "Avg.Res", "Res", "Avg.MFI", "MFI", 
+                  "Res.CV", "MFI.CV", "Counts", "Net.MFI")] <- lapply(bio3.lum.all.df[,c("Dilution", "Avg.Res",
+                  "Res", "Avg.MFI", "MFI", "Res.CV", "MFI.CV",
+                  "Counts", "Net.MFI")], as.numeric)
+
+```
+
+
+
+### Save summaries
+
+Put all Summary sheets into one dataframe
+
+```{r}
+# Initialize lists to store results
+bio3.sum <- list()
+sum.names <- list()
+
+# Loop through each file in bio3.lum
+for (f in seq_along(bio3.sheets.file2)) {
+  file_name <- names(bio3.sheets.file2)[f]  # Get the file name
+  sheets <- bio3.sheets.file2[[f]]  # Access the list of sheets for this file
+  
+  # Assuming the first sheet is always the "Summary" sheet
+  df <- sheets[[1]]  # First sheet in the file
+  
+  # Get the name of the sheet (assuming it's a single sheet named "Summary")
+  df.name <- names(sheets)[1]  # The name of the sheet
+  
+    sum.names[[f]] <- df.name  # Store the sheet name
+    
+    # Find the row where the relevant chunk starts (containing "Sample ID")
+    sum.st <- which(apply(df, 1, function(row) any(row == "Sample ID")))
+    
+    # Extract the relevant chunk from the dataframe and make row1 colnames
+    raw.sum <- df[sum.st[1]:nrow(df), ]
+    colnames(raw.sum) <- raw.sum[1,]
+    raw.sum <- raw.sum[-1,]
+    
+
+    # Store the processed dataframe in bio3.sum
+    bio3.sum[[f]] <- raw.sum
+
+}
+
+# shows all sheets are Summary
+sum.names
+
+# Combine all standards into a single data frame
+all.summs3 <- bind_rows(bio3.sum)
+
+## this is the same as showing the Reported results
+# write.csv(all.summs3, "250324_BIO300.Summaries.csv")
+
+```
+
+
+### Reported results summary
+
+```{r}
+# only keep the non Sarcoid samples - have "Sample" in Sample.ID
+# search for and remove rows without "Sample" in Sample.ID
+bio3.lum.all.df <- bio3.lum.all.df[(grep("Sample",
+                                        bio3.lum.all.df$Sample.ID)),]
+```
+
+```{r}
+# breakdown of initial reported results
+## Notes:
+### Number of samples are nrow(df)/3 because each sample has 3 rows
+### Result CV is an indicator of how well the data fits the curve generated by the standards, there is only 1 per sample: use this to glean if the analyte results are reliable
+### Avg result is only once per sample so total.avg.res = total.samples ideally
+### MFI CV is an indicator of how similar the 2 replicates are, so there is only 1 per sample = total.samples : use this to glean if the individual sample's results are reliable
+### Results and Beads are reported per replicate, so there are 2 per sample (unless single wells) : # = 2 * total.samples
+
+rep.lum.ls3 <- list()
+
+for(i in unique(bio3.lum.all.df$Analyte)){
+
+  df <- bio3.lum.all.df %>% filter(Analyte == i)
+  
+  rep.lum.ls3[[i]] <- data.frame(
+    Total.samples = nrow(df)/3, # total num of samples, irrespective of analyte, 3 rows per sample
+    Analyte = i,
+    Avg.Res.CV = mean(df$Res.CV, na.rm = TRUE), # result CV: clue to reliability of analyte res
+    Reported.Avg.Res = nrow(df[!is.na(df$Avg.Res),]), # 1 per sample
+    Good.MFI.CV = nrow(df[!is.na(df$MFI.CV) & (df$MFI.CV < 40),]), # 1 per sample
+    Bad.MFI.CV = (nrow(df)/3) - nrow(df[!is.na(df$MFI.CV) & (df$MFI.CV < 40),]),
+    Reported.Res = nrow(df[!is.na(df$Res),]), # 2 per sample (unless single wells)
+    Good.beads = nrow(df[!is.na(df$Counts) & (df$Counts > 20),]), # 2 per sample
+    Bad.beads = (nrow(df)/3*2) - nrow(df[!is.na(df$Counts) & (df$Counts > 20),])
+  )
+}
+
+rep.res3 <- bind_rows(rep.lum.ls3)
+
+# View(tx.sheets[["IFNa2"]]) # to view specific sheets
+
+# write.csv(rep.res3, "250324_bio3_Lum.Report.Summary.csv")
+
+```
+
+```{r}
+rep.res3
+```
+
+
+
+### Edit/Fill Lum Results
+
+191 samples, 3 analytes = 573 results
+1719 rows (191 * analytes * 3 rows per smpl)
+All have a result
+
+Criteria
+Remove if:
+- Beads < 20 = 4 (samples 18 & 19 in the fibrosis panel - 2 analytes)
+- MFI CV > 40 = 2 (kept)
+- Excluded due to insuff volume = 0
+(now 223 without a result, cuz I removed 3)
+
+Check all not reported, and either:
+- keep 1 replicate instead of average = 39 (in 2nd round, none in 3rd)
+- extrapolate result from MFI and multiply by dilution = 54 (in 2nd)
+- replace with lowest/highest (good beads, low MFI)
+
+```{r}
+# check beads - we want 20 and up
+min(bio3.lum.all.df$Counts, na.rm = TRUE)
+View(bio3.lum.all.df[bio3.lum.all.df$Counts < 20 & 
+                       !is.na(bio3.lum.all.df$Order),])
+```
+
+```{r}
+# check for any defects or exclusions
+unique(bio3.lum.all.df$Message)
+unique(bio3.lum.all.df$Exclude)
+unique(bio3.lum.all.df$Exclude.Reason)
+
+View(bio3.lum.all.df[!is.na(bio3.lum.all.df$Exclude.Reason),])
+```
+
+
+### Checking the high MFIs
+
+Combining all results into 1 dataframe: file, sheet/analyte, Unk. Dilution, sample ID, avg res, res, Message, res cv (for analyte), mfi cv (for sample), Exclude, Exclude Reason
+```{r}
+# Initialize an empty list to store results
+results <- list()
+
+# Loop through each file and each sheet
+for (f in seq_along(bio3.sheets.file2)) {
+  file_name <- names(bio3.sheets.file2)[f]  # Get the file name
+  sheets <- bio3.sheets.file2[[f]]  # Access the list of sheets for this file
+  
+  for (s in seq_along(sheets)) {
+    sheet_name <- names(sheets)[s]  # Get the sheet name
+    df <- sheets[[s]]  # Access the specific sheet
+    
+    # Find indices for columns containing "Result CV" and "MFI CV"
+    loc_col <- which(grepl("Location", df, ignore.case = TRUE))
+    anly_col <- loc_col + 2 # the word "Analyte" shows up multiple times so just the col next to location col
+    dilu_col <- which(grepl("Unk. Dilution", df, ignore.case = TRUE))
+    sample_id_col <- which(grepl("Sample ID", df, ignore.case = TRUE))
+    avg_col <- which(grepl("Avg. Result", df, ignore.case = TRUE))
+    res_col <- avg_col + 1 # the word "Result" shows up multiple times so just the col next to avg res col
+    msg_col <- res_col + 1 # Message column
+    avg.mfi_col <- which(grepl("Avg. MFI", df, ignore.case = TRUE))
+    mfi_col <- avg.mfi_col + 1 # the word "MFI" shows up multiple times so just the col next to avg mfi col
+    result_cv_col <- which(grepl("Result CV", df, ignore.case = TRUE))
+    mfi_cv_col <- which(grepl("MFI CV", df, ignore.case = TRUE))
+    exc_col <- which(grepl("Exclude$", df, ignore.case = TRUE))
+    # $ ensures the match ends at the end of the string, so it will not match columns like "Exclude Reason"
+    exc_r_col <- which(grepl("Exclude Reason", df, ignore.case = TRUE))
+    
+    # Check if columns exist
+    if (length(avg_col) >0 || length(res_col) > 0 ||
+      length(result_cv_col) > 0 || length(mfi_cv_col) > 0) {
+      # Filter rows where either "Sample ID" != NA | contains "Background|Standard|Control|QC"
+      rows_to_check <- df %>%
+        filter((result_cv_col > 0) # actually has a result CV col, removes summary sheets
+                & (!is.na(df[[sample_id_col]])) # don't copy NA rows
+                 & (df[[sample_id_col]] != "Sample ID")
+                & (grepl("Background|Standard|Control|QC", 
+                          df[[sample_id_col]], ignore.case = TRUE)))
+      
+      # Create a data frame with the required output
+      for (i in 1:nrow(rows_to_check)) {
+        sample_id <- rows_to_check[i, sample_id_col]
+        loctn <- ifelse(length(loc_col) > 0, rows_to_check[i, loc_col], NA)
+        anly <- ifelse(length(anly_col) > 0, rows_to_check[i, anly_col], NA)
+        dilu <- ifelse(length(dilu_col) > 0, 
+                       rows_to_check[i, dilu_col], NA)
+        avg <- ifelse(length(avg_col) > 0, rows_to_check[i, avg_col], NA)
+        res <- ifelse(length(res_col) > 0, rows_to_check[i, res_col], NA)
+        msg <- ifelse(length(msg_col) > 0, rows_to_check[i, msg_col], NA)
+        avg.mfi <- ifelse(length(avg.mfi_col) > 0, 
+                          rows_to_check[i, avg.mfi_col], NA)
+        mfi <- ifelse(length(mfi_col) > 0, rows_to_check[i, mfi_col], NA)
+        res_cv <- ifelse(length(result_cv_col) > 0, 
+                         rows_to_check[i, result_cv_col], NA)
+        mfi_cv <- ifelse(length(mfi_cv_col) > 0, rows_to_check[i, mfi_cv_col], NA)
+        excl <- ifelse(length(exc_col) > 0, rows_to_check[i, exc_col], NA)
+        excl_r <- ifelse(length(exc_r_col) > 0, rows_to_check[i, exc_r_col], NA)
+        
+        results <- append(results, list(data.frame(
+          File = file_name,
+          Sheet = sheet_name,
+          Location = loctn,
+          Analyte = anly,
+          Dilution = dilu,
+          Sample.ID = sample_id,
+          Avg.Res = avg,
+          Res = res,
+          Message = msg,
+          Avg.MFI = avg.mfi,
+          MFI = mfi,
+          Res.CV = res_cv,
+          MFI.CV = mfi_cv,
+          Exclude = excl,
+          Exclude.Reason = excl_r
+        )))
+      }
+    }
+  }
+}
+
+# Combine all results into a single data frame
+bio3.stds <- do.call(rbind, results)
+
+# unique(bio3.lum.all$Message)
+## check if there are rows with "Defects" in the "Message" col
+
+```
+
+Editing/cleaning
+```{r}
+# number rows
+bio3.stds2 <- bio3.stds
+bio3.stds2$Order <- 1:nrow(bio3.stds2)
+bio3.stds2 <- bio3.stds2[order(bio3.stds2$Order),]
+bio3.stds2 <- bio3.stds2 %>% relocate(Order, .before = File)
+
+## just filter out the titles in the res cols and then convert to numeric to filter
+bio3.stds2[bio3.stds2 == "-"] <- NA
+bio3.stds2$Res.CV <- as.numeric(bio3.stds2$Res.CV)
+bio3.stds2$Res.CV <- bio3.stds2$Res.CV *100
+bio3.stds2$MFI.CV <- as.numeric(bio3.stds2$MFI.CV)
+bio3.stds2$MFI.CV <- bio3.stds2$MFI.CV *100
+
+# remove extra rows at bottom from each sheet (formulas, etc.)
+# unique(bio3.lum.all$Location)
+bio3.stds2 <- bio3.stds2[bio3.stds2$Location != "Fit" &
+                                 bio3.stds2$Location != "5PL" &
+                                 bio3.stds2$Location != "4PL",]
+
+# write.csv(bio3.stds2,
+# "250324_bio3.Luminex.ResandStds.Belysa.curated.csv")
+```
+
+
+#### Check Res CV and MFI CV
+
+```{r}
+# check MFI.CV - want below 30, but if too many removed then below 40
+View(bio3.lum.all.df[!is.na(bio3.lum.all.df$MFI.CV) &
+                      bio3.lum.all.df$MFI.CV >= 40,])
+```
+
+```{r}
+# Can also check Result CV's this way, prob better:
+nrow(bio3.lum.all.df[!(is.na(bio3.lum.all.df$Res.CV)) & 
+                      bio3.lum.all.df$Res.CV > 30,])
+# View(bio3.lum.all.df[!(is.na(bio3.lum.all.df$Res.CV)) & bio3.lum.all.df$Res.CV > 30,])
+
+nrow(bio3.lum.all.df[!(is.na(bio3.lum.all.df$Res.CV)) & 
+                      bio3.lum.all.df$Res.CV > 30 &
+                  bio3.lum.all.df$MFI.CV >= 40,])
+# since most high Result CV also have low MFI CV, likely on the tails of the curve and can be kept. the ones with high MFI CV are removed anyway
+```
+
+```{r}
+# Filter out high MFI CV's for samples
+high.mfi <- bio3.lum.all.df[!(is.na(bio3.lum.all.df$MFI.CV)) & bio3.lum.all.df$MFI.CV >= 40,]
+
+# find all the rows for that Sample.ID AND Analyte/only keep rows where both conditions are met in each individual row (since each sample has multiple rows)
+# semi_join by default will only keep rows which are in Both datasets
+high.mfi.df <- semi_join(bio3.lum.all.df, high.mfi, by = c("Analyte", "Sample.ID"))
+
+# check the standards, high mfi cv, and low beads
+to.check.res3 <- bio3.stds2[bio3.stds2$Analyte %in% high.mfi.df$Analyte,]
+to.check.res3$Counts <- NA
+to.check.res3$Net.MFI <- NA
+to.check.res3 <- rbind(high.mfi.df, to.check.res3)
+
+low.beads <- bio3.lum.all.df[bio3.lum.all.df$Counts < 20,]
+low.beads.df <- semi_join(bio3.lum.all.df, low.beads, by = c("Analyte", "Sample.ID"))
+
+to.check.res3b <- bio3.stds2[bio3.stds2$Analyte %in% low.beads.df$Analyte,]
+to.check.res3b$Counts <- NA
+to.check.res3b$Net.MFI <- NA
+
+to.check.res3b <- rbind(low.beads.df, to.check.res3b)
+to.check.res3 <- rbind(to.check.res3, to.check.res3b)
+# write.csv(to.check.res3, "250324_Check.Standards.etc.csv")
+```
+
+```{r}
+# can keep the high mfi but need to remove the low beads
+
+
+# each row has a unique Order, use this to remove results
+### NOTE: only replacing them with NaN for now so I can differentiate them for further Cleaning Only. When I begin analysis, will Have to change these to NA for uniformity
+my.bio3.report <- bio3.lum.all.df
+my.bio3.report$Avg.Res[my.bio3.report$Order %in% low.beads.df$Order] <- NaN
+my.bio3.report$Res[my.bio3.report$Order %in% low.beads.df$Order] <- NaN
+
+## can check that I didn't remove any results I didn't want to remove:
+my.bio3.report[is.nan(my.bio3.report$Res),]
+```
+
+```{r}
+# Check exclusion reason notes
+(my.bio3.report[!(is.na(my.bio3.report$Exclude.Reason)),])
+
+# # report after Removing any with low beads or high MFI CV (in future, just make this my.bio3.lum.all.df and continue with filling/editing)
+# write.csv(my.bio3.report, "250303_bio3.Lum.Trimmed.Res.csv")
+
+```
+
+
+
+
+#### Only 1 Replicate (not run)
+
+```{r}
+# Look for the ones where I can keep 1 replicate instead of average
+
+# length(unique(my.bio3.report$Sample.ID))
+# length(unique(my.bio3.report$Analyte))
+# nrow(my.bio3.report) = 1719
+# 1719/3 analytes = 573
+# 573/3 lines per sample per analyte = 191 samples
+
+# first get all lines with unique Analyte (3) and Sample.ID (191) = first line with avg res: 3*191= 573 rows
+# Extract the first row for each unique combination of Analyte and Sample.ID
+all.avg.res <- my.bio3.report %>%
+  distinct(Analyte, Sample.ID, .keep_all = TRUE)
+# nrow(all.avg.res)
+# [1] 573
+
+# extract all rows with a Reported Avg Res
+rep.avg.res <- all.avg.res[!is.na(all.avg.res$Avg.Res),]
+# nrow(rep.avg.res)
+# [1] 384 # that already have a reported res, so 189 without a result
+## can check this with:
+# nrow(my.bio3.report[!is.na(my.bio3.report$Avg.Res),])
+# [1] 384
+
+# pull all samples that do Not have an average result
+no.rep.avg.res <- all.avg.res[is.na(all.avg.res$Avg.Res),]
+# nrow(no.rep.avg.res)
+# 189 samples with no avg res
+
+# df of all res for pts with no avg
+# find all the rows for that Sample.ID AND Analyte/only keep rows where both conditions are met in each individual row (since each sample has multiple rows)
+# semi_join by default will only keep rows which are in Both datasets
+# all.no.avg.res <- semi_join(my.bio3.report, no.rep.avg.res, by = c("Analyte", "Sample.ID"))
+
+```
+
+Clean results: only 4 missing values cuz low beads
+
+```{r}
+### 39 results with 1 replicate
+
+# find rows that may have 1 replicate result to keep rather than avg
+res1.no.avg <- all.no.avg.res[!is.na(all.no.avg.res$Res),]
+# nrow(res1.no.avg) = 82 results with 1 replicate
+## just a check to make sure no weird case where both Res are reported but avg is not
+nrow(distinct(res1.no.avg, Analyte, Sample.ID, .keep_all = TRUE)) 
+# also 39 so we're good
+
+# get the numbers for how many in each analyte has 1 replicate
+table(res1.no.avg$Analyte)
+# can do sum(table(res1.no.avg$Analyte)) to double check same as nrow
+
+```
+
+```{r}
+# save the df where I only removed samples
+my.bio3.report.trimmed <- my.bio3.report
+```
+
+```{r}
+# replace NA Avg Res with single Res
+my.bio3.report <- my.bio3.report %>%
+  group_by(Analyte, Sample.ID) %>%
+  mutate(
+    # Check if the unique pair exists in res1.no.avg
+    in_res1_no_avg = paste(Analyte, Sample.ID) %in% paste(res1.no.avg$Analyte, res1.no.avg$Sample.ID),
+    
+    # Replace the first NA in Avg.Res if in res1.no.avg
+    Avg.Res = ifelse(
+      in_res1_no_avg & is.na(Avg.Res) & row_number() == which.max(is.na(Avg.Res)), # id position of 1st NA
+      first(Res[!is.na(Res)]),
+      Avg.Res
+      # which.max(is.na(Avg.Res)) function helps identify the position of the first NA
+    )
+  ) %>%
+  ungroup() %>%
+  select(-in_res1_no_avg) %>%  # Remove helper column
+  as.data.frame()
+
+```
+
+
+
+#### Extrapolation (not run)
+Be sure to multiply by dilution effect too
+
+```{r}
+# save df where I removed samples and used 1 replicate
+my.bio3.report.trim.fix <- my.bio3.report
+```
+
+```{r}
+# 342/2 = 171 samples left without an avg res
+# should be 384 - 3 - 39 = 342
+my.bio3.report %>%
+  distinct(Analyte, Sample.ID, .keep_all = TRUE) %>%
+  filter(is.na(Avg.Res) & !is.nan(Res)) %>% nrow()
+```
+
+
+```{r}
+# find which ones I can extrapolate using the MFI, so I'm not calculating over the entire df
+
+# pull all samples that do Not have an average result
+no.avg.res2 <- my.bio3.report %>%
+  distinct(Analyte, Sample.ID, .keep_all = TRUE) %>%
+  filter(is.na(Avg.Res) & !is.nan(Res))
+
+# df of all res for pts with no avg
+# semi_join by default will only keep rows which are in Both datasets
+all.no.avg.res2 <- semi_join(my.bio3.report, no.avg.res2, by = c("Analyte", "Sample.ID"))
+
+# only get rows with an MFI value
+calc.avg.res <- all.no.avg.res2[!is.na(all.no.avg.res2$MFI),]
+
+# copy in eqns3, not just by analyte but File too
+calc.avg.res <- calc.avg.res %>%
+  left_join(eqns3, by = c("File", "Sheet"))
+
+# only keep rows where the MFI > first number in eqns3 (whatever is before first \\s)
+# Extract the first number from the Equation and filter rows
+calc.avg.res.df <- calc.avg.res %>%
+  # extract the first number that is before the first \\s+
+  mutate(first_number = as.numeric(str_extract(Equation, "^[^ ]+"))) %>%
+  # only keep rows that can be extrapolated: MFI > first.num
+  filter(MFI > first_number) %>%
+  # remove the helper column
+  select(-first_number) %>%
+  as.data.frame()
+
+
+## ***REMEMBER to remove the NaN numbers so they do not get returned to the results - this is only for those with multiple replicates, all of my Res are NA in this df cuz it's just 1 row per pt
+calc.avg.res.df <- calc.avg.res.df[!is.nan(calc.avg.res.df$Res),]
+
+# nrow(calc.avg.res.df)
+# I can extrapolate MFI for 64/294 rows (each of the 147 samples has 2 rows of MFI values)
+# some samples will only have 1 value that can be extrapolated, others will have both and need to calc avg res after extrapolation
+```
+
+```{r}
+# calc/ext res
+# My function for extrapolations
+# Function to extrapolate
+my.extrap <- function(MFI, eqn) {
+  uniroot(function(x) eval(parse(text = eqn)) - MFI, c(0.00001, 1000))$root
+}
+
+# Apply the function to the entire dataframe
+calc.avg.res.df <- calc.avg.res.df %>%
+  # mapply the my.extrap function to each pair of MFI and Equation from the dataframe
+  # save extrap res to Result NOT Avg.Res, cuz if there are 2 need to calc avg
+  mutate(Res = mapply(my.extrap, MFI, Equation) * Dilution)
+
+
+```
+
+```{r}
+# Test with random ones
+
+# Equation is Different for each Analyte
+eqn1 <- calc.avg.res.df$Equation[10]
+mfi1 <- calc.avg.res.df$MFI[10]
+res1 <- calc.avg.res.df$Res[10]
+dilu1 <- calc.avg.res.df$Dilution[10]
+
+
+# My function for sCD40L
+(uniroot(function(x) (eval(parse(text = eqn1))) - mfi1, 
+  # (eqn.from.excel) - number.to.try
+  c(0.00001,1000))$root) * dilu1
+
+res1
+
+```
+
+```{r}
+# avg for those that have 2 (if only 1 extrapolated then just use the 1 so na.rm)
+# Calculate Avg.Res
+calc.avg.res.df <- calc.avg.res.df %>%
+  group_by(Analyte, Sample.ID) %>%
+  mutate(Avg.Res = ifelse(n() == 1, Res, mean(Res, na.rm = TRUE))) %>%
+  ungroup() %>% as.data.frame()
+
+```
+
+```{r}
+### 64 total extrapolated results
+### 54 extrapolated samples (44 with 1 rep,10 with 2 replicates extrap)
+
+# check how many pts have 1 vs 2 rows
+num.rows.calc <- calc.avg.res.df %>% group_by(Sample.ID, Analyte) %>% 
+  summarise(n=n()) %>% as.data.frame
+table(num.rows.calc$n)
+# n=1: 60, n=2: 124; sum(60,124,124) = 308; sum(60,124) = 184 = nrow(all.ext.avg.res)
+
+# get num of res extrapolated: remove duplicates from calc.avg.res.df for the ones with 2 rows
+all.ext.avg.res <- distinct(calc.avg.res.df, Analyte, Sample.ID, .keep_all = TRUE)
+
+# get the numbers for how many in each analyte has 1 replicate
+table(all.ext.avg.res$Analyte)
+# can do sum(table(all.ext.avg.res$Analyte)) to double check same as nrow
+
+```
+
+```{r}
+### 64 total extrapolated results
+### 54 extrapolated samples
+
+## add extrap res to NA Avg.Res
+
+# store it unedited just in case there are errors
+my.bio3.report.uned <- my.bio3.report
+
+# Main operation
+my.bio3.report <- my.bio3.report %>%
+  group_by(File, Analyte, Sample.ID) %>%
+  mutate(
+    # Check if the unique pair exists in calc.avg.res.df
+    in_all_ext_avg_res = paste(File, Analyte, Sample.ID) %in% paste(calc.avg.res.df$File, calc.avg.res.df$Analyte, calc.avg.res.df$Sample.ID),
+    
+    # Get the Avg.Res from calc.avg.res.df if it exists
+    new_avg_result = ifelse(
+      in_all_ext_avg_res,
+      # vlookup to get the new Avg.Res, NA if not in calc.avg.res.df
+      calc.avg.res.df$Avg.Res[match(paste(File, Analyte, 
+                                                Sample.ID), 
+                                        paste(calc.avg.res.df$File,
+                                          calc.avg.res.df$Analyte,
+                                    calc.avg.res.df$Sample.ID))], NA),
+    
+    # Get the Res from calc.avg.res.df if it exists
+    new_result = ifelse(
+      in_all_ext_avg_res,
+      # vlookup to get the new Avg.Res, NA if not in calc.avg.res.df
+      calc.avg.res.df$Res[match(paste(Order), 
+                          paste(calc.avg.res.df$Order))], NA),
+    
+    
+    # Check if Avg.Res is NA first, then Replace the first NA in Avg.Res if in calc.avg.res.df, otherwise just keep the Avg.Res
+    Avg.Res = ifelse(
+      is.na(Avg.Res) & row_number() == which.max(is.na(Avg.Res)),
+      new_avg_result,
+      Avg.Res
+    ),
+    Res = ifelse(is.na(Res), new_result, Res)
+  ) %>%
+  ungroup() %>%
+  select(-in_all_ext_avg_res, -new_avg_result, -new_result) %>%  # Clean up helper columns
+  as.data.frame()
+
+```
+
+```{r}
+# re-insert the NaN for the high MFI CV's
+my.bio3.report$Avg.Res[my.bio3.report$Order %in% high.mfi.df$Order] <- NaN
+my.bio3.report$Res[my.bio3.report$Order %in% high.mfi.df$Order] <- NaN
+```
+
+
+
+#### Replacing lowest and highest (not run)
+
+```{r}
+# # samples left without an avg res: 573 - 483 = 90 (the 93 is incdg NaN)
+# pull all samples that do Not have an average result
+no.avg.res3 <- my.bio3.report %>%
+  distinct(Analyte, Sample.ID, .keep_all = TRUE) %>%
+  filter(is.na(Avg.Res) & !is.nan(Res))
+nrow(no.avg.res3)
+```
+
+
+```{r}
+# Filter rows where Avg.Res is NA and Net.MFI contains either '<' or '>'
+my.bio3.report %>%
+  filter(is.na(Avg.Res) &
+           grepl("<|>", Net.MFI))
+
+# ONLY because none of the Net.MFI's have </>, make numeric
+my.bio3.report$Net.MFI <- as.numeric(my.bio3.report$Net.MFI)
+```
+
+
+Create the df with low and high thresholds
+
+```{r}
+## make the thresholds based on samples that have an avg res
+# 384 with full report: 384 * 3 = 1152 (all non NA and non NaN from my.bio3.report.trimmed)
+# 39 with 1 replicate: 39 * 2 = 78 (1 row for "avg" and 1 for res >> res1.no.avg)
+# 44 with 1 extrap: 44 * 2 = 88 (calc.avg.res.df)
+# 10 with 2 extrap: 10 * 3 = 30 (calc.avg.res.df)
+## total df should be: sum(1152,78,88,30) = 1348 rows
+# write.csv(my.bio3.report.trimmed, "250303_bio3_mine1.nomfi.csv")
+
+# get all samples that have an avg res
+my.bio3.report.1 <- my.bio3.report[!is.na(my.bio3.report$Avg.Res),]
+
+# get all rows for those pts with avg res
+my.bio3.report.1 <- semi_join(my.bio3.report, my.bio3.report.1, 
+                             by = c("Analyte", "Sample.ID"))
+
+# remove any rows where Res is NA, avg res is NA, and Order is not in calc.avg.res.df
+all.has.avg.res3 <- my.bio3.report.1[!(is.na(my.bio3.report.1$Avg.Res) &
+                                       is.na(my.bio3.report.1$Res) &
+                !(my.bio3.report.1$Order %in% calc.avg.res.df$Order)),]
+
+# write.csv(all.has.avg.res3, "250303_bio3_my.edited.report.csv")
+```
+
+
+```{r}
+# extract range from Avg.Res only
+my.rnges <- list()
+
+for (i in unique(all.has.avg.res3$Analyte)) {
+  for(f in unique(all.has.avg.res3$File)){
+  df <- data.frame(
+    File = f,
+    Analyte = i,
+    Lowest.res = min(all.has.avg.res3$Avg.Res[all.has.avg.res3$Analyte == i & all.has.avg.res3$File == f], na.rm=TRUE),
+    Highest.res = max(all.has.avg.res3$Avg.Res[all.has.avg.res3$Analyte == i & all.has.avg.res3$File == f], na.rm=TRUE),
+    Lowest.mfi = min(all.has.avg.res3$MFI[
+                      all.has.avg.res3$Analyte == i & all.has.avg.res3$File == f], na.rm=TRUE),
+    Highest.mfi = max(all.has.avg.res3$MFI[ 
+                      all.has.avg.res3$Analyte == i & all.has.avg.res3$File == f], na.rm=TRUE)
+  )
+  
+    # Add the data frame to the list without nesting (just append it)
+    my.rnges[[length(my.rnges) + 1]] <- df
+}}
+
+# combine all results to make my one result df
+my.rnges.df <- bind_rows(my.rnges) # I like this better, just doesn't give rownmaes for each i
+
+
+# Create new columns My.low and My.high using a log below/above adjustment of the range for that analyte
+my.rnges.df <- my.rnges.df %>%
+  mutate(
+    My.low.r = exp(log(Lowest.res) - 1),
+    My.high.r = exp(log(Highest.res) + 1)
+  )
+
+my.rnges.df
+
+
+```
+
+
+```{r}
+# samples left without an avg res: 573 - 483 = 90 (the 93 is incdg NaN)
+
+# Extract the first row for each unique combination of Analyte and Sample.ID
+all.avg.res2 <- my.bio3.report %>%
+  distinct(Analyte, Sample.ID, .keep_all = TRUE)
+# nrow(all.avg.res2)
+# [1] 573
+
+# pull all samples that do Not have an average result and were not excluded by me (NaN)
+no.avg.res3 <- all.avg.res2[is.na(all.avg.res2$Avg.Res) &
+                              !is.nan(all.avg.res2$Avg.Res),]
+# nrow(no.avg.res3)
+# 93 samples with no avg res
+
+# df of all res for pts with no avg
+# find all the rows for that Sample.ID AND Analyte/only keep rows where both conditions are met in each individual row (since each sample has multiple rows)
+# semi_join by default will only keep rows which are in Both datasets
+all.no.avg.res3 <- semi_join(my.bio3.report, no.avg.res3, 
+                             by = c("Analyte", "Sample.ID", "File"))
+
+# only keep rows where MFI != NA
+all.no.avg.res3 <- all.no.avg.res3[!is.na(all.no.avg.res3$MFI),]
+
+# all rows with No Reported Avg Res and no NA MFI: 93 * 2 = 186
+all.no.avg.res3 <- all.no.avg.res3 %>% left_join(my.rnges.df, 
+                                        by = c("Analyte", "File"))
+
+```
+
+```{r}
+# compare the NA Res' MFI to the lowest and highest MFI and
+# replace with little lower/higher than lowest/highest Avg.Res for that analyte
+replaced.res <- all.no.avg.res3 %>%
+  group_by(File, Analyte, Sample.ID) %>%
+  mutate(
+    Replcd.Res = case_when(
+      all(MFI < Lowest.mfi) ~ My.low.r,  # Both MFI's are lower than Lowest.mfi
+      all(MFI > Highest.mfi) ~ My.high.r,  # Both MFI's are higher than Highest.mfi
+      # all(Net.MFI < Lowest.mfi) ~ My.low.r,  # Both MFI's are lower than Lowest.mfi
+      # all(Net.MFI > Highest.mfi) ~ My.high.r,  # Both MFI's are higher than Highest.mfi
+      TRUE ~ NA  # Otherwise, set Avg.Res to NA
+    )
+  ) %>%
+  ungroup() %>% as.data.frame
+
+View(replaced.res)
+sum(!is.na(replaced.res$Replcd.Res))
+
+# using the Reported MFI from the curated results (from Belysa), check the MFI's were lower than the lowest or higher than the highest
+```
+
+```{r}
+# find how many were replaced with the lowest and how many were replaced with the highest
+nrow(replaced.res[!is.na(replaced.res$Replcd.Res) &
+  replaced.res$Replcd.Res == replaced.res$My.low.r,])
+# 186 replaced with 1 log below lowest result
+nrow(replaced.res[!is.na(replaced.res$Replcd.Res) &
+  replaced.res$Replcd.Res == replaced.res$My.high.r,])
+
+# write.csv(replaced.res, "250303_BIO_replaced.csv")
+
+# idk what this note is referring to from bio 1:
+### new note: only plates 1 and 3 have stds and bkgs, so 2, 4, and 5 are not adjusted, thus are still NA's. I'm going to remove those NA's, then re-do the replacement based on plate, and see if the newer file can replace more of the samples
+
+```
+
+
+```{r}
+# add replaced values into master
+
+# store it just in case there are errors
+my.bio3.report.unreplcd <- my.bio3.report
+
+# Main operation
+my.bio3.report <- my.bio3.report %>%
+  group_by(File, Analyte, Sample.ID) %>%
+  mutate(
+    # Check if the unique pair exists in replaced.res
+    in_replaced.res = paste(File, Analyte, Sample.ID) %in%
+      paste(replaced.res$File, replaced.res$Analyte, replaced.res$Sample.ID),
+    
+    # Get the Avg.Res from replaced.res if it exists
+    new_avg_result = ifelse(
+      in_replaced.res,
+      # vlookup to get the new Avg.Res, NA if not in replaced.res
+      replaced.res$Replcd.Res[match(paste(File, Analyte, Sample.ID), 
+                                        paste(replaced.res$File,
+                                          replaced.res$Analyte,
+                                              replaced.res$Sample.ID))],
+      NA
+    ),
+    
+    # Check if Avg.Res is NA first, then Replace the first NA in Avg.Res if in replaced.res, otherwise just keep the Avg.Res
+    Avg.Res = ifelse(
+      is.na(Avg.Res) & row_number() == which.max(is.na(Avg.Res)),
+      new_avg_result,
+      Avg.Res
+    )
+  ) %>%
+  ungroup() %>%
+  select(-in_replaced.res, -new_avg_result) %>%  # Clean up helper columns
+  as.data.frame()
+
+
+```
+
+```{r}
+# change the high mfi cv rows from NaN to NA for consistency
+my.bio3.report$Avg.Res[my.bio3.report$Order %in% high.mfi.df$Order] <- NA
+my.bio3.report$Res[my.bio3.report$Order %in% high.mfi.df$Order] <- NA
+```
+
+
+```{r}
+# check that the current report now has 3 NA Avg.Res
+
+# need to filter for just the first row to check for the NA's cuz all samples have 2 rows of NA's and one with a value
+ch.bio3.report <- my.bio3.report %>% 
+  distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+nrow(ch.bio3.report[is.na(ch.bio3.report$Avg.Res),])
+View(ch.bio3.report[is.na(ch.bio3.report$Avg.Res),])
+```
+
+```{r}
+# re-enter 2/3 avg.res since within the stds range, for the 3rd only keep 1 of the 2 res cuz only 1 within std range
+
+
+
+# Step 1: Update Avg.Res and Res using coalesce
+my.bio3.report2 <- my.bio3.report %>%
+  mutate(
+    Avg.Res = ifelse(Order %in% high.mfi.df$Order, 
+                     high.mfi.df$Avg.Res[match(my.bio3.report$Order, 
+                                               high.mfi.df$Order)], 
+                     Avg.Res),
+    Res = ifelse(Order %in% high.mfi.df$Order, 
+                     high.mfi.df$Res[match(my.bio3.report$Order, 
+                                               high.mfi.df$Order)], 
+                 Res)
+  )
+# coalesce(): The coalesce() function takes two arguments and returns the first non-NA value. In this case, for Avg.Res, it will take the value from my.bio3.report unless it is NA. If Avg.Res is NA, it will replace it with the corresponding value from high.mfi.df (based on the matching rows). The same logic is applied to Res.
+
+identical(my.bio3.report, my.bio3.report2)
+all.equal(my.bio3.report, my.bio3.report2) # shows 9 diffs only: 3 in Avg.Res and 6 in Res
+```
+
+```{r}
+View(my.bio3.report2[my.bio3.report2$Order %in% high.mfi.df$Order,])
+
+# now no NAs
+ch.bio3.report2 <- my.bio3.report2 %>% 
+     distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+nrow(ch.bio3.report2[is.na(ch.bio3.report2$Avg.Res),])
+
+# change the 1 Avg.Res to just 1 Res that's within the stds
+my.bio3.report2$Avg.Res[my.bio3.report2$Order == 127] <- 5980.465
+```
+
+
+```{r}
+my.bio3.report <- my.bio3.report2
+
+# write.csv(my.bio3.report.uned, "250303_bio3.Luminex.unedited.csv")
+# write.csv(my.bio3.report.unreplcd, "250303_bio3.Luminex.unreplcd.csv")
+# write.csv(replaced.res, "250303_bio3.Luminex.Replcd.csv")
+# write.csv(my.bio3.report, "250303_bio3.melted.Preprocessed.Luminex.csv")
+
+```
+
+### Finalize df
+
+```{r}
+# change NaN to NA
+my.bio3.report$Avg.Res[my.bio3.report$Order %in% low.beads.df$Order] <- NA
+my.bio3.report$Res[my.bio3.report$Order %in% low.beads.df$Order] <- NA
+```
+
+
+```{r}
+# check that the Order is correct
+# identical(my.bio3.report$Order, 1:nrow(my.bio3.report))
+## the above does not work because I Ordered it then removed Sarcoid smpls
+
+is.unsorted(my.bio3.report$Order)
+
+# wide format so it looks like the summary
+my.bio3.report.df <- my.bio3.report %>% 
+  distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+
+my.bio3.report.df <- my.bio3.report.df[,c("Sample.ID", "Analyte",
+                                     "Avg.Res")] %>% 
+    pivot_wider(
+    names_from = Analyte, # colnames
+    values_from = Avg.Res # col components
+    # keeps other cols constant
+  ) %>% as.data.frame()
+
+# write.csv(my.bio3.report, "250325_bio3.Full.Preprocessed.Luminex.csv")
+# write.csv(my.bio3.report.df, "250325_bio3.Final.Preprocessed.Luminex.csv")
+```
+
+
+
+### Preprocess Summary
+
+```{r}
+# Combine how many NA or replaced with lowest and remove analytes >50%
+
+# make objects for the edits
+only.1rep <- as.data.frame(table(res1.no.avg$Analyte)) # 1 row per
+extrap.res <- calc.avg.res.df %>% distinct(File, Analyte, Sample.ID, .keep_all = TRUE) # 1-2 rows
+extrap.res <- as.data.frame(table(extrap.res$Analyte)) # now 1 row per
+repl.low <- as.data.frame(table(replaced.res$Analyte)) # 2 rows per
+mfi.high <- as.data.frame(table(high.mfi.df$Analyte)) # 3 rows per
+
+# summary df
+lum.prepocess.summary <- list()
+
+for (i in unique(my.bio3.report$Analyte)) {
+  lum.prepocess.summary[[i]] <- data.frame(
+    Analyte = i,
+    ## NOTE for future lum runs: this low.beads doesn't work
+    # Low.Beads = 0,
+    # NOTE for future lum runs: this high.mfi would not work because there may be more than 1 sample per analyte
+    High.MFI.CV = ifelse(is_empty(mfi.high$Freq[mfi.high$Var1 == i]), 0, (mfi.high$Freq[mfi.high$Var1 == i])/3),
+    Only.1replicate = ifelse(is_empty(only.1rep$Freq[only.1rep$Var1 == i]), 0, only.1rep$Freq[only.1rep$Var1 == i]),
+    Extrapolated = ifelse(is_empty(extrap.res$Freq[extrap.res$Var1 == i]), 0, extrap.res$Freq[extrap.res$Var1 == i]),
+    Replaced.with.lowest = ifelse(is_empty(repl.low$Freq[repl.low$Var1 == i]), 0, (repl.low$Freq[repl.low$Var1 == i])/2)
+  )
+}
+
+# combine all results to make my one result df
+lum.prepocess.summary <- bind_rows(lum.prepocess.summary)
+head(lum.prepocess.summary)
+
+```
+
+```{r}
+# add a col to calc total replaced (would normally also calc total removed but inconsequential rn)
+lum.prepocess.summary <- lum.prepocess.summary %>%
+  mutate(         Total.Removed = paste(High.MFI.CV, " (", 
+                                    # divide by total num samples: 
+                                    # table(my.bio3.report$Analyte)
+                                    round(High.MFI.CV/573*100, 2),
+                                    "%)", sep = ""),
+                           Total.1.Replicate = paste(Only.1replicate, " (", 
+                                    # divide by total num samples: 
+                                    # table(my.bio3.report$Analyte)
+                                    round(Only.1replicate/573*100, 2),
+                                    "%)", sep = ""),
+    Total.Extrapolated = paste(Extrapolated, " (", 
+                                    # divide by total num samples: 
+                                    # table(my.bio3.report$Analyte)
+                                    round(Extrapolated/573*100, 2),
+                                    "%)", sep = "")
+) %>%
+  mutate(Total.Replaced = paste(Replaced.with.lowest, " (",
+                                round(Replaced.with.lowest/573*100, 2),
+                                    "%)", sep = ""))
+
+```
+
+```{r}
+# how many were missing from each analyte to begin with
+# Count the number of NA values in Avg.Res, grouped by Analyte
+na_count_by_analyte <- ch.bio3.report2 %>%
+  group_by(Analyte) %>%
+  summarise(NA_Avg.Res = sum(is.na(Avg.Res)),
+            Total.Missing = paste(NA_Avg.Res, " (",
+                                round(NA_Avg.Res/573*100, 2),
+                                    "%)", sep = ""))
+
+na_count_by_analyte
+```
+
+```{r}
+lum.prepocess.summary <- merge(na_count_by_analyte, lum.prepocess.summary,
+                               by = "Analyte", all = TRUE)
+lum.prepocess.summary <- merge(lum.prepocess.summary, my.rnges.df,
+                               by = "Analyte", all = TRUE)
+
+# write.csv(lum.prepocess.summary, "250303_bio3.Analyte.Summary.csv")
+# write.csv(high.mfi.df, "250303_high.mfis.csv")
+```
+
+```{r}
+# fixing the percentages
+bio1.summary <- read.csv("250204_bio.Analyte.Summary.csv", header=T)
+
+rep.res31 <- read.csv("250128_bio_Lum.Report.Summary.csv", header=T)
+
+bio1.anly.summary <- bio1.summary[,c(2,5:8)]
+
+bio1.anly.summary <- bio1.anly.summary %>% mutate(
+  Total.Reported = rep.res31$Reported.Avg.Res[match(bio1.anly.summary$Analyte,
+                                                  rep.res31$Analyte)]
+) %>%
+  mutate(Total.Missing = 191 - Total.Reported)
+
+bio1.anly.summary <- bio1.anly.summary %>% 
+  relocate(Total.Missing, .before = High.MFI.CV)
+bio1.anly.summary$Total.Reported <- NULL
+```
+
+```{r}
+bio3.anly.summary <- lum.prepocess.summary[,c(1,4:7)]
+
+bio3.anly.summary <- bio3.anly.summary %>% mutate(
+  Total.Reported = rep.res3$Reported.Avg.Res[match(bio3.anly.summary$Analyte,
+                                                  rep.res3$Analyte)]
+) %>%
+  mutate(Total.Missing = 191 - Total.Reported)
+
+bio3.anly.summary <- bio3.anly.summary %>% 
+  relocate(Total.Missing, .before = High.MFI.CV)
+bio3.anly.summary$Total.Reported <- NULL
+
+```
+
+```{r}
+bio.anly.summary <- rbind(bio1.anly.summary, bio3.anly.summary)
+bio.anly.summary <- bio.anly.summary %>% distinct()
+```
+
+```{r}
+bio.anly.summary.fin <- data.frame(
+  Analyte = bio.anly.summary$Analyte,
+  Total.Missing = paste0(bio.anly.summary$Total.Missing, " (",
+              round(bio.anly.summary$Total.Missing/191*100, 2), "%)"),
+  High.MFI.CV = paste0(bio.anly.summary$High.MFI.CV, " (",
+              round(bio.anly.summary$High.MFI.CV/191*100, 2), "%)"),
+  Only.1replicate = paste0(bio.anly.summary$Only.1replicate, " (",
+            round(bio.anly.summary$Only.1replicate/191*100, 2), "%)"),
+  Extrapolated = paste0(bio.anly.summary$Extrapolated, " (",
+            round(bio.anly.summary$Extrapolated/191*100, 2), "%)"),
+  Replaced.with.lowest = paste0(bio.anly.summary$Replaced.with.lowest, " (",
+            round(bio.anly.summary$Replaced.with.lowest/191*100, 2), "%)")
+)
+
+# write.csv(bio.anly.summary.fin, "250303_BIO300.Analyte.Summary.csv")
+```
+
+```{r}
+bio.lum.all.df <- read.csv("250131_bio.Reported.3r.csv", header = T)
+high.mfi1 <- bio.lum.all.df[!(is.na(bio.lum.all.df$MFI.CV)) & bio.lum.all.df$MFI.CV >= 40,]
+high.mfi.df1 <- semi_join(bio.lum.all.df, high.mfi1, by = c("Analyte", "Sample.ID"))
+# write.csv(high.mfi.df1, "250303_bio.high.mfis.1.csv")
+```
+
+
+
+# Master
+
+```{r}
+# luminex res - Replace all _ with a period in Sample.ID
+my.bio3.report.df$Sample.ID <- gsub("\\_", ".", 
+                                   my.bio3.report.df$Sample.ID)
+
+```
+
+```{r}
+# make master file
+master.file <- read.csv("250206_BIO300_Mapping.File.csv", header = T, 
+                   check.names = F)
+head(master.file)
+
+```
+
+```{r}
+# save old master just in case: this was the first luminex preprocessed, does not include the 3 TGBF analytes
+# master.old <- master
+
+# master.old2 does not include the last 3 panels
+master.old2 <- master
+```
+
+
+```{r}
+# re-make master
+new.master <- merge(master.file, my.bio.report.df,
+                    # 194 x 16 and 191 x 10
+                by = "Sample.ID", all = T)
+
+new.master <- merge(new.master, my.bio2.report.df,
+                    # 194 x 25 and 191 x 4
+                by = "Sample.ID", all = T)
+
+new.master <- merge(new.master, my.bio3.report.df,
+                    # 194 x 28 and 191 x 7
+                by = "Sample.ID", all = T)
+
+dim(new.master)
+# 194 x 34
+
+# which colnames are still missing
+all.equal(colnames(master), colnames(new.master))
+
+# master <- merge(master, my.bio3.report.df, 
+#                 by = "Sample.ID",
+#                 all = TRUE)
+dim(master) # same as master.old2 + 6 cols
+```
+
+```{r}
+# master$TP <- gsub("\\.", " ", master$TP)
+
+# add back in the 3 TPs with no luminex cuz have RNAseq
+master.file.add <- master.file[!(master.file$Key %in% master$Key),]
+
+# save it just in case
+master.191 <- master
+
+# add in and fill NAs
+master <- rbind.fill(master.191, master.file.add)
+
+# rearrange
+master <- master %>% relocate(PAXgene.ID, .before = "Sample.ID") %>%
+  relocate(Treatment, .after = "Plasma.ID")
+```
+
+```{r}
+myfun <- function(x) as.Date(x, format="%m/%d/%y")
+new.master <- new.master %>% mutate(Collection.Date = myfun(Collection.Date))
+
+new.master$Age <- year(new.master$Collection.Date) - new.master$Birth.Yr
+
+new.master$TP <- factor(new.master$TP, levels = 
+                   c("Screening", "Week 4", "Week 8", "Week 12", 
+                     "Month.6", "Month.12"))
+```
+
+```{r}
+# re-add the NA's that were first removed for high mfi cv, cuz within stdandards
+# store it unedited just in case there are errors
+new.master.uned <- new.master
+
+new.master$`IL-1b`[new.master$Sample.ID == "Sample.166"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.166"]
+
+new.master$`IL-1b`[new.master$Sample.ID == "Sample.167"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.167"]
+
+new.master$`IL-10`[new.master$Sample.ID == "Sample.180"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.180"]
+```
+
+
+```{r}
+# add tmt to master
+new.master$Treatment <- get.tmt$Treatment[match(new.master$PAXgene.ID, 
+                                            get.tmt$PAXgene.ID)]
+# rearrange
+new.master <- new.master %>% relocate(PAXgene.ID, 
+                                      .before = "Sample.ID") %>%
+  relocate(c(Age, Treatment), .after = "Plasma.ID")
+
+sum(is.na(new.master)) # 67 total cuz 3 rows missing luminex
+sum(is.na(new.master[-c(192:194),])) # just 4 for the low bead counts
+# view the rows with any NAs
+new.master[!complete.cases(new.master),]
+
+# write.csv(new.master, "250327.new_BIO300_Master.File.csv")
+
+# added RNA.ID in excel
+new.master <- read.csv("250327_BIO300_Master.File.csv", header = T)
+master <- new.master
+
+```
+
+```{r}
+### re-input the previous NA's from the old luminex
+
+# master <- master %>% mutate(Sex = case_when(
+#   Sex == "M" ~ "Males",
+#   Sex == "F" ~ "Females",
+# ))
+
+# replace the 3 NA values
+high.mfi.df2 <- high.mfi.df %>% distinct(Analyte, Sample.ID,
+                                         .keep_all = TRUE)
+
+# store it unedited just in case there are errors
+master.uned <- master
+
+master$`IL-1b`[master$Sample.ID == "Sample.166"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.166"]
+
+master$`IL-1b`[master$Sample.ID == "Sample.167"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.167"]
+
+master$`IL-10`[master$Sample.ID == "Sample.180"] <- high.mfi.df2$Avg.Res[high.mfi.df2$Sample.ID == "Sample.180"]
+
+
+```
+
+
+### Check for batch effects
+
+```{r}
+batches <- read_excel_allsheets("250402_BIO.Batches.xlsx")
+```
+
+```{r}
+# df of panels, analytes, parallelism values using first batch as ref
+
+# Initialize an empty list to store the results
+results <- list()
+
+# Loop through each sheet in the batches list
+for(sheet_name in names(batches)) {
+  # Get the current sheet
+  sheet <- batches[[sheet_name]]
+  
+  # Find the row where the word "parallelism" is located (assuming it's in a single cell), arr.ind returns the index position
+  parallelism_row <- which(sheet == "Parallelism", arr.ind = TRUE)
+  
+  # Extract the parallelism value (the cell directly below)
+  parallelism_value <- sheet[parallelism_row[1] + 1, parallelism_row[2]]
+  
+  # Create a data frame for this sheet
+  results[[sheet_name]] <- data.frame(
+          Panel = sheet_name,
+          Analyte = sheet_name,  # Get the name of the dataframe/Analyte
+          Parallelism = parallelism_value
+        )
+  
+  # eqns3 <- rbind(eqns3, new_row)
+}
+
+# Combine all results into one data frame
+batch.df <- bind_rows(results)
+
+```
+
+```{r}
+# modify the df
+batch.df$Panel <- c(rep("Fibrosis", 3), "S100A9", rep("TGFbeta", 3),
+                    rep("Adipokine", 2), rep("HCYTA", 9)
+                    )
+
+batch.df$Parallelism <- as.numeric(batch.df$Parallelism)
+batch.df$Parallelism <- round(batch.df$Parallelism, 3)
+
+batch.df$Analyte <- gsub("fib ", "", batch.df$Analyte)
+batch.df$Analyte <- gsub("adip ", "", batch.df$Analyte)
+
+# write.csv(batch.df, "250402_bio3.Lum.Batches.csv")
+```
+
+
+
+```{r}
+# my long format of just the Avg Res, 1 row per result
+# nrow = num smpls * num analytes
+bio3 <- my.bio3.report %>% 
+  distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+bio2 <- my.bio2.report %>% 
+  distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+bio1 <- my.bio.report %>% 
+  distinct(File, Analyte, Sample.ID, .keep_all = TRUE)
+```
+
+```{r}
+# group by analyte and File then z-score
+
+
+# Function to z-transform relative to the median
+z_transform_median <- function(df) {
+  df %>%
+    group_by(Analyte, File) %>%
+    mutate(
+      median_value = median(Avg.Res, na.rm = TRUE),
+      mad_value = mad(Avg.Res, na.rm = TRUE),  # or sd(Avg.Res) if you prefer standard deviation - The Median Absolute Deviation (MAD) is often preferred in robust statistics, but if your data is normally distributed, you can use the standard deviation (SD) instead
+      z_transformed = (Avg.Res - median_value) / mad_value  # Z-transform using median and MAD
+    ) %>%
+    select(-median_value, -mad_value)  # Drop the temporary columns
+}
+
+# Apply the z-transformation to each dataframe
+bio1_z <- z_transform_median(bio1)
+bio2_z <- z_transform_median(bio2)
+bio3_z <- z_transform_median(bio3)
+
+# Combine all datasets together (assuming they have the same structure)
+combined_data <- bind_rows(bio1_z, bio2_z, bio3_z)
+
+# You can now proceed to compare the File options per Analyte:
+# You may want to calculate the difference between the two File options for each Analyte
+# e.g., difference in z-transformed values:
+# batch_effects <- combined_data %>%
+#   spread(File, z_transformed) %>%
+#   mutate(diff = `Option1` - `Option2`)  # Replace Option1 and Option2 with the actual File labels
+# 
+# # View the results
+# head(batch_effects)
+
+
+
+```
+
+```{r}
+combined_data.df <- combined_data %>% group_by(Analyte, File) %>%
+  summarise(median = median(Avg.Res, na.rm = T), .groups = 'drop')
+```
+
+```{r}
+
+# Step 2: Pivot to wide format to get the medians for each File side by side
+medians_wide <- combined_data.df %>%
+  pivot_wider(names_from = Analyte, values_from = median)
+
+# subtract the medians
+med.diffs <- lapply(medians_wide[,-1], function(df){
+  df <- na.omit(df)
+  df2 <- df %>% summarise(diff = df[1,] - df[2,])
+  return(df2)
+})
+
+
+
+# # Step 5: Plot to visually inspect the differences
+# boxplot(difference ~ Analyte, data = medians_wide, main = "Batch Effect Difference by Analyte")
+
+```
+
+```{r}
+combined_data <- combined_data %>% as.data.frame()
+
+
+```
+
+
+```{r}
+# plot the z-transformed values to check for batch effect
+# comp <- list(unique(combined_data$File))
+  
+pdf("250327_BIO300_Boxplots.Batch3.ind.z.noLog.pdf", height = 10, width = 9)
+for(i in unique(combined_data$Analyte)){
+  comp2 <- combined_data %>% filter(Analyte == i)
+  comp <- list(unique(comp2$File))
+
+plot <-ggboxplot(combined_data %>% filter(Analyte == i), x="File",
+  # ggboxplot(combined_data, x="File",
+          y="z_transformed", color = "File", 
+          add="jitter")+
+  # geom_point() +
+  # scale_color_manual(values = c("Placebo" = "lightskyblue",
+  #                               "BIO 300 Oral Suspension" = "salmon")) +
+  #                    # labels = c("0" = "No",
+  #                    #            "1" = "Yes")) +
+  
+  #add p values
+  stat_compare_means(comparisons = comp, aes(label = paste0("p =", ..p.format..)),
+                     method = "wilcox.test", label.x=1.5, vjust=0.2, size = 5) +
+  # Wilcox - wilcox.test() - non parametric, compare only 2 groups, need to specify comparisons first
+  
+  # ##add p values - change based on multiple or just 2
+  # stat_compare_means(aes(label = paste0("p = ", ..p.format..)),
+  #                    method = "kruskal.test", label.x=1.5,vjust=0.7,
+  #                    size=7,face="bold") +
+  # ## Kruskal-Wallis - kruskal.test() - Compare multiple groups (non-parametric)
+  # 
+  
+  # #Remove if you dont want log10 on y axis
+  # scale_y_log10(breaks=trans_breaks('log10', function(x) 10^x), labels=trans_format('log10', math_format(10^.x)))+
+  # scale_y_continuous(trans='log10') +
+  
+
+  #.~X means facet in columns 
+  # facet_wrap(.~Analyte, scales="free")+
+  
+  theme(legend.position = "left") +#labs(x='',y='Log10 Levels (pg/mL)') + 
+  theme(plot.title = element_text(size=20, face="bold", hjust=0.5),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size=10, face="bold"),
+    axis.title.x = element_text(size=12, face="bold"),
+    axis.title.y = element_text(size=12, face="bold"),
+    strip.text.x = element_text(size=20, face="bold"),
+    strip.text.y = element_text(size=12, face="bold"),
+    # legend.title = element_text(size=14, face = "bold"),
+    # legend.key.size = unit(2, 'cm'),
+    legend.title = element_blank(),
+    legend.text = element_text(size=18)) +
+  ggtitle(paste0("BIO 300 Batch Effects: ", i))
+    # ggtitle("BIO 300 Batch Effects")
+
+print(plot)
+}
+dev.off()
+
+```
+
+```{r}
+results <- combined_data %>%
+  group_by(Analyte) %>%
+  summarise(p_value = wilcox.test(z_transformed ~ File, exact = F)$p.value)
+```
+
+
+```{r}
+check.batch <- combined_data %>%
+  spread(File, z_transformed) %>% as.data.frame()
+
+check.batch.list <- split(check.batch, check.batch$Analyte) %>% # create a dataframe based on each filter
+  as.data.frame()
+
+
+check.batch.ls2 <- lapply(check.batch.list, function(df){
+    data.frame(
+  Adipokine.P1.2 = median(df$`adipokine_p1-p2.xlsx`, 
+                           na.rm = TRUE),
+  Adipokine.P3.5 = median(df$`adipokine_p3-p5.xlsx`,
+                          na.rm = TRUE)
+
+) %>% mutate(
+  Adipo.Batch = Adipokine.P1.2 - Adipokine.P3.5
+) %>% ungroup() %>% as.data.frame()
+})
+
+
+# check.batch.df <- check.batch %>% group_by(Analyte) %>% mutate(
+#     Adipokine = `adipokine_p1-p2.xlsx` - `adipokine_p3-p5.xlsx`,
+#     Fibrosis = `fibrosis_p1-p2.xlsx` - `fibrosis_p3-p5.xlsx`,
+#     Batch = `P1.P2` - `P3.P5`
+#   ) %>% ungroup() %>% as.data.frame()
+
+# write.csv(check.batch.df, "250325_BIO_Check.Batch.meds.csv")
+```
+
+## Using ComBat
+
+```{r}
+combined.data.anly <- split(combined_data, combined_data$Analyte)
+
+combat.anly <- lapply(combined.data.anly, function(df){
+  df
+})
+```
+
+
+
+
+
+## Tables of Visits, Samples, Analytes
+
+```{r}
+# re-started here on 5/6/25
+master <- read.csv("250327_BIO300_Master.File.csv", header = T)
+```
+
+
+```{r}
+# levels in a column
+master$TP <-  
+  revalue(master$TP,								# (old = new)
+          c("Month.6"  = "Month 6", "Month.12" = "Month 12"))
+```
+
+
+```{r}
+# # table of samples for RNASeq
+# bio.meta <- bio.trome.meta
+master$TP <- factor(master$TP, levels = c("Screening", "Week 4",
+                                              "Week 8", "Week 12",
+                                              "Month 6", "Month 12"))
+
+master$Treatment <- factor(master$Treatment, levels = c(
+  "Placebo", "BIO 300 Oral Suspension"
+))
+
+table(master$Treatment, master$TP)
+```
+
+```{r}
+# table of samples for Luminex
+bio.meta.lum <- master[!is.na(master$Sample.ID),]
+table(bio.meta.lum$Treatment, bio.meta.lum$TP)
+```
+
+```{r}
+# data.frame(Analyte = unique(combined_data))
+```
+
+
+```{r}
+table(master$TP)
+```
+
+##### Table 1
+
+```{r}
+
+# Function for "Quantile type" #median [#lower quantile-#upper quantile]
+quantile_type <- function(df,v) {
+  resp <- unname(quantile(as.numeric(df[,v]),na.rm=TRUE,probs=c(0.25,0.5,0.75)))
+  return(paste0(resp[2]," [",resp[1],"-",resp[3],"]"))
+}
+
+# Function for "Count Type" #N (#%)
+count_type <- function(data,total) {
+  cnt <- data %>% summarise(count = n())
+  cnt <- cnt$count
+  cnt1 <- paste0(cnt," (", (round(cnt/total * 100,1)),"%)")
+  # ifelse(cnt != 0, cnt1, "0 (0%)")
+}
+
+
+```
+
+```{r}
+# myfun <- function(x) as.Date(x, format="%m/%d/%y")
+# master <- master %>% mutate(Collection.Date = myfun(Collection.Date))
+# 
+# master$Age <- year(master$Collection.Date) - master$Birth.Yr
+
+master$TP <- factor(master$TP, levels = 
+                   c("Screening", "Week 4", "Week 8", "Week 12", 
+                     "Month 6", "Month 12"))
+    
+```
+
+```{r}
+# write.csv(master.all, "250303_BIO300.Master.File.csv")
+```
+
+
+```{r}
+# # remove the 3 pts with no luminex
+# master.all <- master
+# 
+# master <- master[!is.na(master$Sample.ID),]
+```
+
+
+```{r warning=FALSE}
+ getTable1 <- function(filename) {
+   
+    dat <- master %>% arrange(Subject.ID, TP)
+    dat <- dat %>% distinct(Subject.ID, .keep_all = TRUE)
+    # dat <- dat[dat$TP.mths == 0,]
+    
+    
+    #-----
+    
+    total <- dat%>%summarize(count=n())
+    
+    # dat$dead_or_alive <- dat$Hospitalized
+    # alive_group <- dat #%>% filter(Hospitalized==0)
+    # dead_group <- dat %>% filter(Hospitalized==1)
+    
+    
+    # count_alive <- alive_group %>%summarize(count=n())
+    # count_dead <- dead_group %>%summarize(count=n())
+    
+    
+    #"Count Type" # (#%)
+    cat(paste0(",All Patients"), "\n")
+    cat(paste0(",",total,",","\n"))
+    
+      for(i in unique(dat$Treatment)){
+      cat(paste0(i, "," ,count_type(dat%>%filter(Treatment==i),total),",",
+"\n"))
+    }
+    
+    
+    # cat(paste0("Sex,,,,","\n"))
+    for(i in unique_no.NA(dat$Sex)){
+      cat(paste0(i, "," ,count_type(dat%>%filter(Sex==i),total),",",
+"\n"))
+    }
+    
+    
+    #"Quantile type" # [#-#]
+    cat(paste0("Age,",quantile_type(dat,"Age"),",",
+"\n"))
+    
+    
+    cat(paste0("BMI,",quantile_type(dat,"BMI.at.Screening"),",",
+"\n"))
+    
+    
+    for(i in unique_no.NA(dat$Race)){
+      cat(paste0("Race", ",\n", i, ",",
+                 count_type(dat%>%filter(Race==i),total),",",
+
+"\n"))
+    }
+
+    
+    for(i in unique_no.NA(dat$Ethnicity)){
+      cat(paste0("Ethnicity", ",\n",
+        i,",",count_type(dat%>%filter(Ethnicity==i),total),",",
+"\n"))
+    }
+    
+    
+    
+ }
+
+
+#---------
+# Print all, copy into text editor, then open as excel so commas convert to columns
+sink("250327_BIO_Table.1.csv")
+getTable1(filename)
+paste0("\n\n\n")
+
+
+
+table(master$TP)
+paste0("\n\n\n")
+
+table(master$Treatment, master$TP)
+paste0("\n\n\n")
+
+table(bio.meta.lum$Treatment, bio.meta.lum$TP)
+paste0("\n\n\n")
+
+table(na.omit(all.bios)$Analyte)
+sink()
+
+#-----------
+### Changes in Excel sheet:
+## replace "." > ","
+## replace "_" > " "
+## replace "hx" > "history"
+## remove "CTx "
+## replace "Prior_MI" > "Prior Myocardial Infarction"
+## very low p-values: "<0.001"
+## re-organize rows
+```
+
+
+
+## Boxplots
+
+```{r}
+all.bios <- melt(master[,c(2,7,18,20:ncol(master))],
+                 id = c(1:3), variable.name = "Analyte",
+                 value.name = "Value")
+all.bios <- all.bios[!is.na(all.bios$Sample.ID),]
+
+sum(is.na(all.bios)) # only 4 missing cuz low beads
+
+# remove TGFβ3 cuz too 48% replaced with lowest
+all.bios <- all.bios[all.bios$Analyte != "TGFβ3",]
+```
+
+
+```{r}
+
+all.bios <- combined_data %>% as.data.frame()
+
+melt.anly <- all.bios[,c("Sample.ID", "Sheet", "Avg.Res")]
+
+melt.anly$Sample.ID <- gsub("\\_", ".", 
+                                   melt.anly$Sample.ID)
+
+
+melt.anly$Plasma.ID <- master$Plasma.ID[match(melt.anly$Sample.ID, master$Sample.ID)]
+
+melt.anly$TP <- master$TP[match(melt.anly$Sample.ID, master$Sample.ID)]
+
+melt.anly$TP <- factor(melt.anly$TP, levels = 
+                         c("Screening", "Week 4", "Week 8", "Week 12", "Month 6", "Month 12"))
+
+get.tmt <- read.csv("250325_BIO_Map.Tmt.csv", header = T)
+
+melt.anly$Treatment <- get.tmt$Treatment[match(melt.anly$Plasma.ID, get.tmt$Plasma.ID)]
+
+```
+
+```{r}
+# add tmt to master
+master$Treatment <- get.tmt$Treatment[match(master$Plasma.ID, 
+                                            get.tmt$Plasma.ID)]
+sum(is.na(master)) # just 4 for the low bead counts
+```
+
+
+```{r}
+head(all.bios)
+```
+
+```{r}
+# melt.anly$Sheet <- factor(melt.anly$Sheet, levels = c("TGFβ1",
+#                                                     "TGFβ2", "TGFβ3"))
+```
+
+```{r}
+comp <- list(c("Placebo", "BIO 300 Oral Suspension"))
+```
+
+```{r}
+# levels in a column
+all.bios$Analyte <-  
+  revalue(all.bios$Analyte,								# (old = new)
+          c("IFNg" = "IFNg","IL.1b" = "IL-1b","IL.2" = "IL-2","IL.4" = "IL-4","IL.6" = "IL-6","IL.8" = "IL-8","IL.10" = "IL-10","MCP.1" = "MCP-1","TNF.a" = "TNF-a","TGFβ1" = "TGFβ1","TGFβ2" = "TGFβ2","S100A9" = "S100A9","IL.18BPa" = "IL-18BPa","COMP" = "COMP","Uteroglobin" = "Uteroglobin","Adiponectin" = "Adiponectin","PAI.1..total." = "PAI-1 (total)"))
+```
+
+
+```{r}
+for(i in unique(all.bios$TP)){
+
+plot <- ggboxplot(all.bios %>% filter(TP == i), x="Treatment",
+          y="Value", color = "Treatment", 
+          add="jitter")+
+  # geom_point() +
+  scale_color_manual(values = c("Placebo" = "limegreen",
+                                "BIO 300 Oral Suspension" = "lightslateblue")) +
+  #                    # labels = c("0" = "No",
+  #                    #            "1" = "Yes")) +
+  
+  #add p values
+  stat_compare_means(comparisons = comp, aes(label = paste0("p =", ..p.format..)),
+                     method = "wilcox.test", label.x=1.5, vjust=0.2, size = 5) +
+  # Wilcox - wilcox.test() - non parametric, compare only 2 groups, need to specify comparisons first
+  
+  # ##add p values - change based on multiple or just 2
+  # stat_compare_means(aes(label = paste0("p = ", ..p.format..)),
+  #                    method = "kruskal.test", label.x=1.5,vjust=0.7,
+  #                    size=7,face="bold") +
+  # ## Kruskal-Wallis - kruskal.test() - Compare multiple groups (non-parametric)
+  # 
+  
+  # #Remove if you dont want log10 on y axis
+  # scale_y_log10(breaks=trans_breaks('log10', function(x) 10^x), labels=trans_format('log10', math_format(10^.x)))+
+  scale_y_continuous(trans='log10') +
+  
+
+  #.~X means facet in columns 
+  facet_wrap(.~Analyte, scales="free", nrow = 2)+
+  
+  theme(legend.position = "left") +labs(x='',y='Log10 Levels (pg/mL)') + 
+  theme(plot.title = element_text(size=20, face="bold", hjust=0.5),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size=10, face="bold"),
+    axis.title.x = element_text(size=12, face="bold"),
+    axis.title.y = element_text(size=12, face="bold"),
+    strip.text.x = element_text(size=20, face="bold"),
+    strip.text.y = element_text(size=12, face="bold"),
+    # legend.title = element_text(size=14, face = "bold"),
+    # legend.key.size = unit(2, 'cm'),
+    legend.title = element_blank(),
+    legend.text = element_text(size=18),
+    legend.position = "bottom") +
+  ggtitle(paste0("At ", i))
+
+pdf(paste0("250327_BIO300_Boxplots.", i, ".pdf"), 
+    height = 10, width = 20)
+  print(plot)
+dev.off()
+
+}
+```
+
+```{r}
+pdf(paste0("250327_BIO300_Boxplots.All.pdf"), 
+    height = 10, width = 20)
+ggboxplot(all.bios, x="Treatment",
+          y="Value", color = "Treatment", 
+          add="jitter")+
+  # geom_point() +
+  scale_color_manual(values = c("Placebo" = "limegreen",
+                                "BIO 300 Oral Suspension" = "lightslateblue")) +
+  #                    # labels = c("0" = "No",
+  #                    #            "1" = "Yes")) +
+  
+  #add p values
+  stat_compare_means(comparisons = comp, aes(label = paste0("p =", ..p.format..)),
+                     method = "wilcox.test", label.x=1.5, vjust=0.2, size = 5) +
+  # Wilcox - wilcox.test() - non parametric, compare only 2 groups, need to specify comparisons first
+  
+  # ##add p values - change based on multiple or just 2
+  # stat_compare_means(aes(label = paste0("p = ", ..p.format..)),
+  #                    method = "kruskal.test", label.x=1.5,vjust=0.7,
+  #                    size=7,face="bold") +
+  # ## Kruskal-Wallis - kruskal.test() - Compare multiple groups (non-parametric)
+  # 
+  
+  # #Remove if you dont want log10 on y axis
+  # scale_y_log10(breaks=trans_breaks('log10', function(x) 10^x), labels=trans_format('log10', math_format(10^.x)))+
+  scale_y_continuous(trans='log10') +
+  
+
+  #.~X means facet in columns 
+  facet_wrap(.~Analyte, scales="free", nrow = 2)+
+  
+  theme(legend.position = "left") +labs(x='',y='Log10 Levels (pg/mL)') + 
+  theme(plot.title = element_text(size=20, face="bold", hjust=0.5),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size=10, face="bold"),
+    axis.title.x = element_text(size=12, face="bold"),
+    axis.title.y = element_text(size=12, face="bold"),
+    strip.text.x = element_text(size=20, face="bold"),
+    strip.text.y = element_text(size=12, face="bold"),
+    # legend.title = element_text(size=14, face = "bold"),
+    # legend.key.size = unit(2, 'cm'),
+    legend.title = element_blank(),
+    legend.text = element_text(size=18),
+    legend.position = "bottom") +
+  ggtitle("Whole Cohort")
+
+
+dev.off()
+```
+
+
+
+## Table of Analytes
+
+```{r}
+table(na.omit(all.bios)$Analyte)
+```
+
+
+
+## Median IQR Table
+
+```{r}
+## Functions needed
+# Function for "Count Type" #N (#%)
+count_type <- function(data,total) {
+  cnt <- data %>% summarise(count = n())
+  cnt <- cnt$count
+  cnt1 <- paste0(cnt," (", (round(cnt/total * 100,1)),"%)")
+  # ifelse(cnt != 0, cnt1, "0 (0%)")
+}
+
+# Function for "Quantile type" #median [#lower quantile-#upper quantile]
+quantile_type <- function(df,v) {
+  resp <- unname(quantile(as.numeric(df[,v]),na.rm=TRUE,probs=c(0.25,0.5,0.75)))
+  return(paste0(round(resp[2],2)," [",round(resp[1],2),"-",round(resp[3],2),"]"))
+}
+
+```
+
+
+
+```{r warning=FALSE}
+getTable1 <- function(filename) {
+  dat <- comp.1.3
+  
+  # Summarize counts
+  total <- dat %>% summarize(count = n())
+  never <- dat %>% filter(ACR == "Never")
+  curr <- dat %>% filter(ACR == "Current")
+  c.never <- never %>% summarize(count = n())
+  c.curr <- curr %>% summarize(count = n())
+  
+  
+  # Header
+  cat(paste0(",Never ACR,Current ACR,p value"), "\n")
+  
+
+    cat(paste0(total,",",
+            count_type(never, total), ",",
+            count_type(curr, total), "\n"))
+    
+    cols <- colnames(dat[, 8:55])
+    
+    # "Count Type" # (#%)
+    # for(acr in unique(dat$ACR)){
+    for (i in seq_along(dat[, 8:55])) {
+      col_name <- cols[[i]]
+      
+      # Use backticks to handle special characters in col_name
+      # formula_str: " `my column` ~ ACR"
+      formula_str <- paste0("`", col_name, "` ~ ACR")
+      
+      cat(paste0(col_name, ",",
+                 quantile_type(never, col_name), ",",
+                 quantile_type(curr, col_name), ",",
+                 round(wilcox.test(as.formula(formula_str),
+                                   data=dat)$p.value,3), ",",
+                 wilcox.test(as.formula(formula_str),
+                                   data=dat)$p.value,
+                 "\n"))
+    # }
+  }
+}
+
+#---------
+# Print all, copy into text editor, then open as excel so commas convert to columns
+getTable1(filename)
+```
+
+
+##### Alluvial
+
+```{r}
+
+# ID, TP.mths, sym.336
+# master.alluv <- master[,c("Subject.ID","TP","Treatment")]
+# master.alluv <- master.alluv[!is.na(master.alluv$IFNg),]
+
+
+# Plot
+
+pdf("250327_BIO300.Alluvial.pdf", width = 13, height = 12)
+ggplot(master,
+       aes(x = TP, alluvium = Subject.ID,
+           stratum = Treatment, fill = Treatment, label = Treatment)) +
+  scale_fill_manual(values = c("Placebo" = "limegreen",
+                               "BIO 300 Oral Suspension" = "lightslateblue")) +
+  geom_flow() +
+  geom_stratum(width = 0.6) + # width of bars
+  # geom_text(aes(label = paste0(after_stat(count),
+  #                       "\n(",
+  #                        percent(after_stat(prop), accuracy=.1), ## not showing correct %
+  #                        ")")),
+  # geom_text(aes(label = paste0("n=",after_stat(count),"\n(",
+  #                              scales::percent(after_stat(prop)))),
+    geom_text(aes(label = paste0("n = ",after_stat(count),
+                                 "\n (", round(after_stat(count)/36*100,
+                                               0),
+                                 "%)")),
+            size = 6,
+            stat='count', color="white", position=position_stack(vjust=0.5)) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size=18, face="bold", hjust=0.5),
+        axis.text.x = element_text(size=15, face="bold"),
+        axis.text.y = element_text(size=15, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size=16, face="bold")) +
+        # legend.key.size = unit(3, 'cm')) +
+  ggtitle("BIO 300") +
+  ylab("Count") +
+  xlab("Timepoint (Months)") 
+  # scale_x_continuous(breaks=c(3,6,12,18,24,36))
+
+dev.off()
+
+```
+
+
+
+
+
+## Heatmap
+
+Heat maps
+1. Actual: Chunks 1, 4-6
+  - Bray, avg
+  - Bray, complete
+  - Euclidean, avg
+  - Euclidean, com
+2. Log: Chunks 1-2, 4-6
+  - Bray, avg
+  - Bray, complete
+  - Euclidean, avg
+  - Euclidean, com
+3. Z: Chunks 1, 3, 5-6
+  - Euclidean, avg
+  - Euclidean, com
+
+```{r}
+# **Chunk 1
+
+## Setting up for heat maps
+## For all 3: Actual, Log, Z
+
+# cut dfs to ID and cell types, make col1 = rownames, na.omit, and transpose
+  heat.actual.bl <- comp.1.3[,c(1,8:ncol(comp.1.3))]
+# heat.actual.bl <- heat.actual.bl[,colnames(heat.actual.bl) != "MIG/CXCL9"]
+  rownames(heat.actual.bl) <- heat.actual.bl[,1] # heat.actual.bl$Patient.ID shows row 17 is NA
+  heat.actual.bl <- heat.actual.bl[,-1]
+  heat.actual.bl <- na.omit(heat.actual.bl)
+  heat.actual.bl <- t(heat.actual.bl)
+
+heat.list.bl <- heat.actual.bl
+
+# ensuring reproducibility for sampling
+set.seed(40)
+```
+
+
+```{r}
+# **Chunk 2
+
+### For Log ###
+
+
+# For Log
+heat.log.bl <- heat.actual.bl
+
+# (cannot use bray method later due to negative values - when add 1, no warning)
+  heat.log.bl <- t(log10(t(heat.actual.bl + 1)))
+
+heat.list.bl <- heat.log.bl
+
+```
+
+
+```{r}
+# **Chunk 3
+
+### For Z ###
+### Cannot use the same distance matrix - euc only for Z
+heat.z.bl <- heat.actual.bl
+
+
+  heat.z.bl <- t(scale(t(heat.actual.bl)))
+
+
+heat.list.bl <- heat.z.bl
+
+# create empty lists for column and row dendrograms
+dend.cols.bl <- vector('list', length(heat.list.bl))
+dend.rows.bl <- vector('list', length(heat.list.bl))
+
+# creating distance matrix for rows and columns
+
+dend.cols.bl <- t(heat.list.bl) %>% vegdist(method = "euc") %>% 
+  hclust(method = "average") %>% as.dendrogram %>% ladderize  %>% 
+  color_branches(k=2, groupLabels = TRUE)
+
+dend.rows.bl <- (heat.list.bl) %>% vegdist(method = "euc") %>% 
+  hclust(method = "average") %>% as.dendrogram %>% ladderize
+
+```
+
+
+```{r}
+# **Chunk 4
+
+### ONLY for actual and log, cannot use for Z transform ###
+## SKIP for z transform ##
+
+# creating distance matrix for rows and columns
+
+dend.cols.bl <- t(heat.list.bl) %>% vegdist(method = "bray") %>% hclust(method = "complete") %>% as.dendrogram %>% ladderize  %>% color_branches(k=2, groupLabels = TRUE)
+
+dend.rows.bl <- (heat.list.bl) %>% vegdist(method = "bray") %>% hclust(method = "complete") %>% as.dendrogram %>% ladderize
+
+```
+
+
+
+```{r}
+# **Chunk 5
+
+### For all 3
+# Color bar for Above/below median
+
+# cut dfs to ID and analytes And comparison, na.omit
+  colors.list.bl <- comp.1.3[,c(1,7,8:ncol(comp.1.3))]
+  colors.list.bl <- na.omit(colors.list.bl)
+
+
+col.code.bar.bl <- colors.list.bl[,2] # just the comparison column: can also write colors.list.bl$dose_category
+col.bar.bl <- col.code.bar.bl
+
+
+
+col.bar.bl <- replace(col.bar.bl, which (col.bar.bl == "Never"), "lightskyblue")
+col.bar.bl <- replace(col.bar.bl, which (col.bar.bl == "Current"), "salmon")
+
+```
+
+### Plot Heatmaps
+
+```{r}
+# **Chunk 6
+
+### For all 3
+# Plot Heatmaps:
+# Only need to change pdf name and graph title based on which analysis you want to view
+## Only un-comment one line at a time: one 1, one 2, one 3 for the pdf name and graph title
+
+pdf(file = paste("Graphs/241007_Heat",
+                 # ".Actual",    # 1
+                 ".Log",       # 1
+                 # ".Z",       # 1
+                 ".Bray",       ## 2
+                 # ".Euc",        ## 2
+                 # ".AvgClus",          ### 3
+                 ".ComClus",        ### 3
+                 ".pdf",sep=""), # lines 282-286 is to create the file name
+      height = 40, width = 95)
+  par(cex.main = 7, lwd = 5)
+  heatmap.2(heat.list.bl,
+          main = paste("Never vs Current ACR", # the df to use is each item in the list of dfs
+                       # " - Actual Values",     # 1
+                       " - Log",               # 1
+                       # " - Z transform",         # 1
+                       " (Bray with ",          ## 2
+                       # " (Euc with ",             ## 2
+                       # "Average Clustering)",         ### 3
+                       "Complete Clustering)",      ### 3
+                       sep=""), # lines 290-294 is to create the graph title
+          srtCol = 90,
+          Rowv = dend.rows.bl, #dendrogram created earlier
+          Colv = dend.cols.bl,
+          trace= "none", hline = NA, tracecol = NULL,        
+          margins = c(8,8),   # 30,35
+          # key.xlab = "no / yes",
+          keysize = 0.5,
+          density.info = "none",
+          col = colorRampPalette(brewer.pal(8, "Reds"))(25),
+          ColSideColors=col.bar.bl, # color bar created earlier
+          colsep = c(0, 27), # vertical line c(from, to)
+          rowsep = c(0, 48),     # horizontal line c(from, to)
+          sepcolor="black",
+          sepwidth =c(0.005,0.0005),
+          cexRow = 6)
+
+dev.off()
+
+
+```
+
+### Chi-square
+Log, bray, complete
+
+```{r}
+## Ran chunks 1 & 2 for Log
+# **Chunk 4
+
+
+# creating distance matrix for rows and columns
+dend.cols.bl <- vector('list', length(heat.list.bl))
+dend.rows.bl <- vector('list', length(heat.list.bl))
+
+# creating distance matrix for rows and columns
+
+dend.cols.bl <- t(heat.list.bl) %>% vegdist(method = "bray") %>% 
+  hclust(method = "complete") %>% as.dendrogram %>% ladderize  %>% 
+  color_branches(k=2, groupLabels = TRUE)
+
+dend.rows.bl <- (heat.list.bl) %>% vegdist(method = "bray") %>% 
+  hclust(method = "complete") %>% as.dendrogram %>% ladderize
+
+```
+
+```{r}
+
+  # Extract the current dendrogram data frame
+  col <- dend.cols.bl
+  
+# gives the branch colors in order they appear on the dend
+colors <- get_leaves_branches_attr(col, "col") 
+
+uni.col <- colors[!duplicated(colors)]
+clus <- 1:2
+
+# create a lookup table matching colors with 1:2
+clus.num <- as.data.frame(cbind(uni.col,clus))
+# gives the IDs in the order they appear on the dend
+IDs <- get_leaves_attr(col, "label")
+# match the row numbers so I have the ID and corresponding color
+check.clus <- as.data.frame(cbind(colors, IDs))
+
+check.clus$clus <- clus.num$clus[match(check.clus$colors, clus.num$uni.col)]
+#vlookup to add clus.num:
+# wanted.data$add.new.col <- lookup.tbl$return.this[wanted.data$look.for, lookup.tbl$look.here]
+
+
+check.clus$ACR <- comp.1.3$ACR[match(check.clus$IDs, comp.1.3$Subject.ID)]
+#vlookup to add dose
+
+head(check.clus)
+
+```
+
+
+```{r}
+
+  chisq.tbls <- table(check.clus$clus, check.clus$ACR)
+  chisq.res <- chisq.test(table(check.clus$clus, check.clus$ACR),correct=F)$p.value
+
+chisq.tbls
+chisq.res
+
+```
+
+Removing MIG/CXCL9
+
+```{r}
+## Ran chunks 1 & 2 for Log
+# **Chunk 4
+
+
+# creating distance matrix for rows and columns
+dend.cols.bl <- vector('list', length(heat.list.bl))
+dend.rows.bl <- vector('list', length(heat.list.bl))
+
+# creating distance matrix for rows and columns
+
+dend.cols.bl <- t(heat.list.bl) %>% vegdist(method = "bray") %>% 
+  hclust(method = "complete") %>% as.dendrogram %>% ladderize  %>% 
+  color_branches(k=2, groupLabels = TRUE)
+
+dend.rows.bl <- (heat.list.bl) %>% vegdist(method = "bray") %>% 
+  hclust(method = "complete") %>% as.dendrogram %>% ladderize
+
+```
+
+```{r}
+
+  # Extract the current dendrogram data frame
+  col <- dend.cols.bl
+  
+# gives the branch colors in order they appear on the dend
+colors <- get_leaves_branches_attr(col, "col") 
+
+uni.col <- colors[!duplicated(colors)]
+clus <- 1:2
+
+# create a lookup table matching colors with 1:2
+clus.num <- as.data.frame(cbind(uni.col,clus))
+# gives the IDs in the order they appear on the dend
+IDs <- get_leaves_attr(col, "label")
+# match the row numbers so I have the ID and corresponding color
+check.clus <- as.data.frame(cbind(colors, IDs))
+
+check.clus$clus <- clus.num$clus[match(check.clus$colors, clus.num$uni.col)]
+#vlookup to add clus.num:
+# wanted.data$add.new.col <- lookup.tbl$return.this[wanted.data$look.for, lookup.tbl$look.here]
+
+
+check.clus$ACR <- comp.1.3$ACR[match(check.clus$IDs, comp.1.3$Subject.ID)]
+#vlookup to add dose
+
+head(check.clus)
+
+```
+
+
+```{r}
+
+  chisq.tbls2 <- table(check.clus$clus, check.clus$ACR)
+  chisq.res2 <- chisq.test(table(check.clus$clus, check.clus$ACR),correct=F)$p.value
+
+chisq.tbls2
+chisq.res2
+
+```
+
+# LMM
+
+```{r}
+lapply(master, function(df){length(unique(df))})
+```
+
+
+```{r}
+# Treatment is already a factor in master
+# assigning the first sym.clus color is NA cuz pts stay in Treatment grp
+# need the Pt ID, timepoint, treatment, and all luminex
+master.lmm <- master[,c(10, 7, 13, 18, 20:ncol(master))]
+  # "Subject.ID", "Treatment", "Sex", "TP", )]
+
+# remove TGFβ3 cuz too 48% replaced with lowest
+master.lmm$TGFβ3 <- NULL
+
+
+# timepoint needs to be linear
+master.lmm <- master.lmm %>% mutate(timepoint = case_when(
+  TP == "Screening" ~ 0,
+  TP == "Week 4" ~ 4,
+  TP == "Week 8" ~ 8,
+  TP == "Week 12" ~ 12,
+  TP == "Month 6" ~ 26,
+  TP == "Month 12" ~ 52,
+  TRUE ~ NA
+))
+
+master.lmm.log <- master.lmm
+master.lmm.log[,c(5:21)] <- lapply(master.lmm.log[,c(5:21)], log10)
+
+master.lmm.lp1 <- master.lmm
+master.lmm.lp1[,c(5:21)] <- lapply(master.lmm.lp1[,c(5:21)], log1p)
+
+```
+
+
+```{r}
+
+# components only >> analytes only
+bio.lmm.all <- master.lmm.lp1[,c(5:21)]
+bio.cols <- colnames(bio.lmm.all)
+
+bio.filt <- vector('list', length(bio.cols))
+for(i in seq_along(bio.cols)){
+  bio.filt[[i]] <- noquote(paste0(bio.cols[[i]]))
+}
+
+# fit.all <- vector('list', length(bio.filt))
+# for(i in seq_along(bio.filt)){
+#    fit.all[[i]] <- lmer(master.lmm[,bio.filt[[i]]] ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+#  }
+```
+
+```{r}
+# generate the iteratively named functions
+# 1 outcome and 1 predictor at a time
+## I can't write a loop for the actual models, but I can write a loop to construct all of them and then paste
+
+
+sink("250506_BIO_LMM.lp1.loop.csv")
+
+# Loop through each combination
+for (l in seq_along(bio.filt)) {
+  i <- bio.filt[[l]]
+
+    # Fit the model (1 predictor)
+   cat(paste0("fit.lp1.", i, " <- lmer(", i, " ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)", "\n\n",
+
+    # add to a list
+    "fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.", i, 
+    "))", "\n", "names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.", 
+    i, "'", "\n\n",
+
+    # compute adjusted predicted values - to generate a plot
+    "dat.lp1.", i, " <- predict_response(fit.lp1.", i, ", terms = c('timepoint', 'Treatment'))", "\n\n",
+    
+    # add to a list
+    "dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.", i, 
+    "))", "\n", "names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.", 
+    i, "'", "\n\n"
+    ))
+}
+
+
+sink()
+
+
+```
+
+
+```{r}
+## adding hospitalization as a comparison:
+# * in a model includes main effects and all interactions among 
+# the terms. This is what you want because you're interested in 
+# how the relationship between timepoint and IL.4 
+# changes depending on both timepoint and Treatment
+fit.all.sym <- lmer(IFNg ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+fit.all.act <- lmer(IL.1b ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+fit.all.imp <- lmer(IL.2 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+fit.all.tot <- lmer(IL.4 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- list(fit.all.sym, fit.all.act, 
+                      fit.all.imp, fit.all.tot)
+names(fit.all) <- bio.filt[1:4]
+
+
+dat.all.sym <- predict_response(fit.all.sym, terms = c("timepoint", "Treatment"))
+dat.all.act <- predict_response(fit.all.act, terms = c("timepoint", "Treatment"))
+dat.all.imp <- predict_response(fit.all.imp, terms = c("timepoint", "Treatment"))
+dat.all.tot <- predict_response(fit.all.tot, terms = c("timepoint", "Treatment"))
+
+
+dat.all <- list(dat.all.sym, dat.all.act, dat.all.imp, dat.all.tot)
+names(dat.all) <- bio.filt[1:4]
+  
+
+```
+
+```{r}
+fit.all.lp1 <- list()
+dat.all.lp1 <- list()
+
+fit.lp1.IFNg <- lmer(IFNg ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IFNg))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IFNg'
+
+dat.lp1.IFNg <- predict_response(fit.lp1.IFNg, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IFNg))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IFNg'
+
+fit.lp1.IL.1b <- lmer(IL.1b ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.1b))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.1b'
+
+dat.lp1.IL.1b <- predict_response(fit.lp1.IL.1b, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.1b))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.1b'
+
+fit.lp1.IL.2 <- lmer(IL.2 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.2))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.2'
+
+dat.lp1.IL.2 <- predict_response(fit.lp1.IL.2, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.2))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.2'
+
+fit.lp1.IL.4 <- lmer(IL.4 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.4))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.4'
+
+dat.lp1.IL.4 <- predict_response(fit.lp1.IL.4, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.4))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.4'
+
+fit.lp1.IL.6 <- lmer(IL.6 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.6))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.6'
+
+dat.lp1.IL.6 <- predict_response(fit.lp1.IL.6, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.6))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.6'
+
+fit.lp1.IL.8 <- lmer(IL.8 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.8))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.8'
+
+dat.lp1.IL.8 <- predict_response(fit.lp1.IL.8, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.8))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.8'
+
+fit.lp1.IL.10 <- lmer(IL.10 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.10))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.10'
+
+dat.lp1.IL.10 <- predict_response(fit.lp1.IL.10, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.10))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.10'
+
+fit.lp1.MCP.1 <- lmer(MCP.1 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.MCP.1))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.MCP.1'
+
+dat.lp1.MCP.1 <- predict_response(fit.lp1.MCP.1, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.MCP.1))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.MCP.1'
+
+fit.lp1.TNF.a <- lmer(TNF.a ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.TNF.a))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.TNF.a'
+
+dat.lp1.TNF.a <- predict_response(fit.lp1.TNF.a, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.TNF.a))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.TNF.a'
+
+fit.lp1.TGFβ1 <- lmer(TGFβ1 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.TGFβ1))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.TGFβ1'
+
+dat.lp1.TGFβ1 <- predict_response(fit.lp1.TGFβ1, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.TGFβ1))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.TGFβ1'
+
+fit.lp1.TGFβ2 <- lmer(TGFβ2 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.TGFβ2))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.TGFβ2'
+
+dat.lp1.TGFβ2 <- predict_response(fit.lp1.TGFβ2, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.TGFβ2))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.TGFβ2'
+
+fit.lp1.S100A9 <- lmer(S100A9 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.S100A9))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.S100A9'
+
+dat.lp1.S100A9 <- predict_response(fit.lp1.S100A9, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.S100A9))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.S100A9'
+
+fit.lp1.IL.18BPa <- lmer(IL.18BPa ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.IL.18BPa))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.IL.18BPa'
+
+dat.lp1.IL.18BPa <- predict_response(fit.lp1.IL.18BPa, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.IL.18BPa))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.IL.18BPa'
+
+fit.lp1.COMP <- lmer(COMP ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.COMP))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.COMP'
+
+dat.lp1.COMP <- predict_response(fit.lp1.COMP, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.COMP))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.COMP'
+
+fit.lp1.Uteroglobin <- lmer(Uteroglobin ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.Uteroglobin))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.Uteroglobin'
+
+dat.lp1.Uteroglobin <- predict_response(fit.lp1.Uteroglobin, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.Uteroglobin))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.Uteroglobin'
+
+fit.lp1.Adiponectin <- lmer(Adiponectin ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.Adiponectin))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.Adiponectin'
+
+dat.lp1.Adiponectin <- predict_response(fit.lp1.Adiponectin, terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.Adiponectin))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.Adiponectin'
+
+fit.lp1.PAI.1..total. <- lmer(PAI.1..total. ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm.lp1)
+
+fit.all.lp1 <- append(fit.all.lp1, list(fit.lp1.PAI.1..total.))
+names(fit.all.lp1)[length(fit.all.lp1)] <- 'fit.lp1.PAI.1..total.'
+
+dat.lp1.PAI.1..total. <- predict_response(fit.lp1.PAI.1..total., terms = c('timepoint', 'Treatment'))
+
+dat.all.lp1 <- append(dat.all.lp1, list(dat.lp1.PAI.1..total.))
+names(dat.all.lp1)[length(dat.all.lp1)] <- 'dat.lp1.PAI.1..total.'
+
+
+```
+
+
+```{r}
+fit.all <- list()
+dat.all <- list()
+
+fit.IFNg <- lmer(IFNg ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IFNg))
+names(fit.all)[length(fit.all)] <- 'fit.IFNg'
+
+dat.IFNg <- predict_response(fit.IFNg, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IFNg))
+names(dat.all)[length(dat.all)] <- 'dat.IFNg'
+
+fit.IL.1b <- lmer(IL.1b ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.1b))
+names(fit.all)[length(fit.all)] <- 'fit.IL.1b'
+
+dat.IL.1b <- predict_response(fit.IL.1b, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.1b))
+names(dat.all)[length(dat.all)] <- 'dat.IL.1b'
+
+fit.IL.2 <- lmer(IL.2 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.2))
+names(fit.all)[length(fit.all)] <- 'fit.IL.2'
+
+dat.IL.2 <- predict_response(fit.IL.2, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.2))
+names(dat.all)[length(dat.all)] <- 'dat.IL.2'
+
+fit.IL.4 <- lmer(IL.4 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.4))
+names(fit.all)[length(fit.all)] <- 'fit.IL.4'
+
+dat.IL.4 <- predict_response(fit.IL.4, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.4))
+names(dat.all)[length(dat.all)] <- 'dat.IL.4'
+
+fit.IL.6 <- lmer(IL.6 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.6))
+names(fit.all)[length(fit.all)] <- 'fit.IL.6'
+
+dat.IL.6 <- predict_response(fit.IL.6, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.6))
+names(dat.all)[length(dat.all)] <- 'dat.IL.6'
+
+fit.IL.8 <- lmer(IL.8 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+# boundary (singular) fit: see help('isSingular')
+# experiencing a singular fit — specifically, one or more of the random effects have (near) zero variance, likely too few observations per level
+
+fit.all <- append(fit.all, list(fit.IL.8))
+names(fit.all)[length(fit.all)] <- 'fit.IL.8'
+
+dat.IL.8 <- predict_response(fit.IL.8, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.8))
+names(dat.all)[length(dat.all)] <- 'dat.IL.8'
+
+fit.IL.10 <- lmer(IL.10 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.10))
+names(fit.all)[length(fit.all)] <- 'fit.IL.10'
+
+dat.IL.10 <- predict_response(fit.IL.10, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.10))
+names(dat.all)[length(dat.all)] <- 'dat.IL.10'
+
+fit.MCP.1 <- lmer(MCP.1 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.MCP.1))
+names(fit.all)[length(fit.all)] <- 'fit.MCP.1'
+
+dat.MCP.1 <- predict_response(fit.MCP.1, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.MCP.1))
+names(dat.all)[length(dat.all)] <- 'dat.MCP.1'
+
+fit.TNF.a <- lmer(TNF.a ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.TNF.a))
+names(fit.all)[length(fit.all)] <- 'fit.TNF.a'
+
+dat.TNF.a <- predict_response(fit.TNF.a, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.TNF.a))
+names(dat.all)[length(dat.all)] <- 'dat.TNF.a'
+
+fit.TGFβ1 <- lmer(TGFβ1 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.TGFβ1))
+names(fit.all)[length(fit.all)] <- 'fit.TGFβ1'
+
+dat.TGFβ1 <- predict_response(fit.TGFβ1, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.TGFβ1))
+names(dat.all)[length(dat.all)] <- 'dat.TGFβ1'
+
+fit.TGFβ2 <- lmer(TGFβ2 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.TGFβ2))
+names(fit.all)[length(fit.all)] <- 'fit.TGFβ2'
+
+dat.TGFβ2 <- predict_response(fit.TGFβ2, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.TGFβ2))
+names(dat.all)[length(dat.all)] <- 'dat.TGFβ2'
+
+fit.S100A9 <- lmer(S100A9 ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.S100A9))
+names(fit.all)[length(fit.all)] <- 'fit.S100A9'
+
+dat.S100A9 <- predict_response(fit.S100A9, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.S100A9))
+names(dat.all)[length(dat.all)] <- 'dat.S100A9'
+
+fit.IL.18BPa <- lmer(IL.18BPa ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.IL.18BPa))
+names(fit.all)[length(fit.all)] <- 'fit.IL.18BPa'
+
+dat.IL.18BPa <- predict_response(fit.IL.18BPa, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.IL.18BPa))
+names(dat.all)[length(dat.all)] <- 'dat.IL.18BPa'
+
+fit.COMP <- lmer(COMP ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.COMP))
+names(fit.all)[length(fit.all)] <- 'fit.COMP'
+
+dat.COMP <- predict_response(fit.COMP, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.COMP))
+names(dat.all)[length(dat.all)] <- 'dat.COMP'
+
+fit.Uteroglobin <- lmer(Uteroglobin ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.Uteroglobin))
+names(fit.all)[length(fit.all)] <- 'fit.Uteroglobin'
+
+dat.Uteroglobin <- predict_response(fit.Uteroglobin, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.Uteroglobin))
+names(dat.all)[length(dat.all)] <- 'dat.Uteroglobin'
+
+fit.Adiponectin <- lmer(Adiponectin ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+# Warning: Model may not have converged with 1 eigenvalue close to zero: 1.0e-11
+# random-effects covariance matrix is nearly singular, suggesting: limited variation in the random effect (here, Subject.ID).
+
+fit.all <- append(fit.all, list(fit.Adiponectin))
+names(fit.all)[length(fit.all)] <- 'fit.Adiponectin'
+
+dat.Adiponectin <- predict_response(fit.Adiponectin, terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.Adiponectin))
+names(dat.all)[length(dat.all)] <- 'dat.Adiponectin'
+
+fit.PAI.1..total. <- lmer(PAI.1..total. ~ Treatment * timepoint + (1 | Subject.ID), data = master.lmm)
+
+fit.all <- append(fit.all, list(fit.PAI.1..total.))
+names(fit.all)[length(fit.all)] <- 'fit.PAI.1..total.'
+
+dat.PAI.1..total. <- predict_response(fit.PAI.1..total., terms = c('timepoint', 'Treatment'))
+
+dat.all <- append(dat.all, list(dat.PAI.1..total.))
+names(dat.all)[length(dat.all)] <- 'dat.PAI.1..total.'
+
+```
+
+
+
+```{r}
+sink("250506_BIO300_LMM.lp1.summaries.csv")
+lapply(fit.all.lp1, summary)
+sink()
+```
+
+```{r}
+names(fit.all.lp1) <- bio.filt
+
+slope_trends.all.lp1 <- lapply(fit.all.lp1, function(df){
+  lstrends(df, ~ Treatment, var = "timepoint")
+})
+
+sink("250506_BIO.LMM.lp1.all.slopes.csv")
+slope_trends.all.lp1
+sink()
+
+
+# Pairwise comparisons of slopes
+slope_pairs.all.lp1 <- lapply(slope_trends.all.lp1, pairs)
+
+sink("250506_BIO.LMM.lp1.comparing.slopes.csv")
+slope_pairs.all.lp1
+sink()
+
+```
+
+```{r}
+# master.lmm <- master.lmm %>%
+#       rename("IFNg" = "IFNg","IL.1b" = "IL-1b","IL.2" = "IL-2","IL.4" = "IL-4","IL.6" = "IL-6","IL.8" = "IL-8","IL.10" = "IL-10","MCP.1" = "MCP-1","TNF.a" = "TNF-a","TGFβ1" = "TGFβ1","TGFβ2" = "TGFβ2","S100A9" = "S100A9","IL.18BPa" = "IL-18BPa","COMP" = "COMP","Uteroglobin" = "Uteroglobin","Adiponectin" = "Adiponectin","PAI.1..total." = "PAI-1 (total)")
+```
+
+
+```{r}
+# ## graphing it: use ggeffects plot(), automatically facets by hosp
+# pdf("250310_PASC_LMM.facet.pdf")
+# plot(dat.all, 
+#      colors = c("Respiratory" = "lightskyblue",
+#                 "Neurologic" = "lightslateblue",
+#                 "Indiscriminate Symptoms" = "indianred2",
+#                 "No Symptoms" = "gray17"),
+#      one_plot = TRUE)
+# dev.off()
+
+## can use ggplot, calling the variables As They Are Listed in the
+# prediction model, so it is not the same names as I have, use str(dat.all) to see the names
+
+pdf("250506_BIO.LMM.lp1.all.slopes.noLabls.pdf", width = 68, height = 25)
+
+plot_list <- list()
+
+for(i in seq_along(dat.all.lp1)){
+  
+  to.plot <- dat.all.lp1[[i]]
+  slope_tr <- summary(slope_trends.all.lp1[[i]])
+  slope_tr$timepoint.trend <- round(slope_tr$timepoint.trend, 4)
+  
+  # Extract slopes for specific treatments
+  slope_placebo <- slope_tr$timepoint.trend[slope_tr$Treatment == "Placebo"]
+  slope_bio <- slope_tr$timepoint.trend[slope_tr$Treatment == "BIO 300 Oral Suspension"]
+  
+  # setting axes for slope labels
+# Identify the first timepoint per group
+label_positions <- do.call(rbind, lapply(split(to.plot, to.plot$group), function(df) {
+  df_first <- df[which.min(df$x), ]
+  
+  slope <- if (df_first$group == "Placebo") {
+    slope_tr$timepoint.trend[slope_tr$Treatment == "Placebo"]
+  } else {
+    slope_tr$timepoint.trend[slope_tr$Treatment == "BIO 300 Oral Suspension"]
+  }
+  
+  df_first$slope_label <- paste("Slope =", slope)
+  return(df_first)
+}))
+
+
+
+
+  myplot <- ggplot(to.plot, aes(x = x, y = predicted, color = group)) + 
+    geom_line(size = 1) + 
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), 
+                color = NA, 
+                alpha = 0.12) +
+    
+    # geom_text(aes(x = x.pos, y = y.pos1), 
+    #           label = paste("Slope = ", slope_placebo), 
+    #           color = "limegreen", size = 6, show.legend = FALSE) +
+    # 
+    # geom_text(aes(x = x.pos, y = y.pos2), 
+    #           label = paste("Slope = ", slope_bio), 
+    #           color = "lightslateblue", size = 6, show.legend = FALSE) +
+    geom_text(data = label_positions,
+          aes(x = x, y = predicted, label = slope_label),
+          hjust = -0.1,  # adjust if needed for space
+          vjust = 2.3,
+          size = 8,
+          show.legend = FALSE) +
+    
+    scale_color_manual(values = c("Placebo" = "limegreen",
+                                  "BIO 300 Oral Suspension" = "lightslateblue")) +
+    scale_fill_manual(values = c("Placebo" = "limegreen",
+                                 "BIO 300 Oral Suspension" = "lightslateblue")) +
+    # labs(x = "Timepoint (Weeks)", y = "Predicted Analyte Values", 
+         labs(title = gsub("\\.", "-", substr(names(dat.all.lp1)[i], 5, nchar(names(dat.all.lp1)[i])))) + 
+    theme(plot.title = element_text(size = 27, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 22, face = "bold"),
+          axis.text.y = element_text(size = 22, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          # legend.title = element_blank(),
+          # legend.text = element_text(size = 15, face = "bold"),
+          # legend.key.size = unit(1.3, 'cm'),
+          legend.position = "none")
+
+  plot_list[[i]] <- myplot
+}
+
+grid.arrange(grobs = plot_list, nrow = 3)
+
+dev.off()
+
+```
+
+
+## LMM compare at 1 TP
+
+```{r}
+## try with a few to make sure correct
+# unique(master.lmm$timepoint)
+# [1]  0 4 8 12 26 52
+
+# total for all pts
+fit.all.ifng <- fit.all.lp1$IFNg
+
+ls.all.8 <- lsmeans(fit.all.ifng, ~ Treatment | timepoint, 
+                      at = list(timepoint = 8))
+pairs(ls.all.8)
+
+ls.all.52 <- lsmeans(fit.all.ifng, ~ Treatment | timepoint, 
+                      at = list(timepoint = 52))
+pairs(ls.all.52)
+
+```
+
+```{r}
+# total for hosp pts
+ls.hos.3 <- lsmeans(fit.all.tot, ~ Treatment | timepoint, 
+                      at = list(timepoint = 3))
+pairs(ls.hos.3)
+
+ls.hos.6 <- lsmeans(fit.all.tot, ~ Treatment | timepoint, 
+                      at = list(timepoint = 6))
+pairs(ls.hos.6)
+```
+
+```{r}
+# comparing hosp and non hos
+
+# Get the estimated marginal means for Treatment and Hospitalized at timepoint == 3
+ls.hnh.3 <- lsmeans(fit.total.hnh.tot, 
+                      ~ Treatment * Hospitalized | timepoint, 
+                      at = list(timepoint = 3))
+
+# View the results
+pairs(ls.hnh.3)
+
+
+ls.hnh.6 <- lsmeans(fit.total.hnh.tot, 
+                      ~ Treatment * Hospitalized | timepoint, 
+                      at = list(timepoint = 6))
+
+# View the results
+comp.ls.hnh.36 <- pairs(ls.hnh.6)
+
+
+ls.hnh.36 <- lsmeans(fit.total.hnh.tot, 
+                      ~ Treatment * Hospitalized | timepoint, 
+                      at = list(timepoint = 6))
+
+# View the results
+comp.ls.hnh.36 <- pairs(ls.hnh.36)
+
+```
+
+```{r}
+for(i in names(fit.all.lp1)){
+  cat(paste0("fit.all.lp1$", i, ",\n", sep = ""))
+}
+```
+
+```{r}
+
+comps.for.ls.lp1 <- list(fit.all.lp1$IFNg,
+fit.all.lp1$IL.1b,
+fit.all.lp1$IL.2,
+fit.all.lp1$IL.4,
+fit.all.lp1$IL.6,
+fit.all.lp1$IL.8,
+fit.all.lp1$IL.10,
+fit.all.lp1$MCP.1,
+fit.all.lp1$TNF.a,
+fit.all.lp1$TGFβ1,
+fit.all.lp1$TGFβ2,
+fit.all.lp1$S100A9,
+fit.all.lp1$IL.18BPa,
+fit.all.lp1$COMP,
+fit.all.lp1$Uteroglobin,
+fit.all.lp1$Adiponectin,
+fit.all.lp1$PAI.1..total.)
+
+names(comps.for.ls.lp1) <- c('fit.all.lp1$IFNg',
+'fit.all.lp1$IL.1b',
+'fit.all.lp1$IL.2',
+'fit.all.lp1$IL.4',
+'fit.all.lp1$IL.6',
+'fit.all.lp1$IL.8',
+'fit.all.lp1$IL.10',
+'fit.all.lp1$MCP.1',
+'fit.all.lp1$TNF.a',
+'fit.all.lp1$TGFβ1',
+'fit.all.lp1$TGFβ2',
+'fit.all.lp1$S100A9',
+'fit.all.lp1$IL.18BPa',
+'fit.all.lp1$COMP',
+'fit.all.lp1$Uteroglobin',
+'fit.all.lp1$Adiponectin',
+'fit.all.lp1$PAI.1..total.')
+```
+
+
+```{r}
+# just looking at Treatment | timepoint, 
+                      # at = list(timepoint = x)
+
+comps.for.ls <- list(fit.all$IFNg,
+fit.all$IL.1b,
+fit.all$IL.2,
+fit.all$IL.4,
+fit.all$IL.6,
+fit.all$IL.8,
+fit.all$IL.10,
+fit.all$MCP.1,
+fit.all$TNF.a,
+fit.all$TGFβ1,
+fit.all$TGFβ2,
+fit.all$S100A9,
+fit.all$IL.18BPa,
+fit.all$COMP,
+fit.all$Uteroglobin,
+fit.all$Adiponectin,
+fit.all$PAI.1..total.)
+
+names(comps.for.ls) <- c('fit.all$IFNg',
+'fit.all$IL.1b',
+'fit.all$IL.2',
+'fit.all$IL.4',
+'fit.all$IL.6',
+'fit.all$IL.8',
+'fit.all$IL.10',
+'fit.all$MCP.1',
+'fit.all$TNF.a',
+'fit.all$TGFβ1',
+'fit.all$TGFβ2',
+'fit.all$S100A9',
+'fit.all$IL.18BPa',
+'fit.all$COMP',
+'fit.all$Uteroglobin',
+'fit.all$Adiponectin',
+'fit.all$PAI.1..total.')
+```
+
+```{r}
+lp1.pairs.0 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 0)))
+})
+
+lp1.pairs.4 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 4)))
+})
+
+lp1.pairs.8 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 8)))
+})
+
+lp1.pairs.12 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 12)))
+})
+
+lp1.pairs.26 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 26)))
+})
+
+lp1.pairs.52 <- lapply(comps.for.ls.lp1, function(df){
+  p <- pairs(lsmeans(df, ~ Treatment | timepoint,
+                     at = list(timepoint = 52)))
+})
+
+
+```
+
+
+```{r}
+# save all
+
+sink("250506_BIO_comp.lp1.at.TPs.csv")
+
+lp1.pairs.0
+lp1.pairs.4
+lp1.pairs.8
+lp1.pairs.12
+lp1.pairs.26
+lp1.pairs.52
+
+sink()
+
+```
+
+
+# GAMM
+Non linear model, since the small sample size likely does not have a normal distribution
+
+Chan: s() to model non-linear relationships, and thus it doesn't provide a direct slope estimate. Instead, it provides a p-value for testing trajectory differences (pvalue_trend below) and baseline estimates (aa$pTerms.table).
+
+```{r}
+# chan's example
+Data1$acute_hosp_yn = Data1$acute_hosp_yn %>% as.ordered()
+
+res.gam = NULL
+
+for(i in rownames(Biomarkers.corrected)) { 
+  Alldata.tem = data.frame(Data1,x=Data1[,i] %>% as.numeric)
+
+  model= gamm(x ~ acute_hosp_yn + 
+    s(TP.mths, bs = "cr", k = 5) +
+      s(TP.mths, by=acute_hosp_yn, bs = "cr", k = 5),
+              random = list(record.id = ~1), 
+    family = gaussian(), data = Alldata.tem)
+
+    aa = summary(model$gam)
+    pvalues = c(aa$pTerms.table[1,"p-value"], aa$s.table[2,"p-value"])
+      
+ res.gam = rbind(res.gam, pvalues)  }   
+      
+colnames(res.gam) = c("pvalue_overall", "pvalue_trend") 
+
+# Prediction: 
+predictions <- predict(model$gam, newdata = newdata, 
+                       type = "response", se.fit = TRUE)
+  
+# Illustration: you can also use stat_smooth function with method="gam" argument.
+```
+
+```{r}
+# ordering my comparison column
+master.lmm.lp1$Treatment = master.lmm.lp1$Treatment %>% as.ordered()
+```
+
+```{r}
+# create an empty variable
+res.gam = NULL
+
+# looping thru the analyte names
+for(i in colnames(master.lmm.lp1[,5:21])) {
+
+  # selecting one analyte
+  Alldata.tem = data.frame(master.lmm.lp1, x = master.lmm.lp1[,i] %>% as.numeric)
+
+  model= gamm(x ~ Treatment + 
+    s(timepoint, bs = "cr", k = 5) + # check timepoint effect
+      s(timepoint, by=Treatment, bs = "cr", k = 5), # check analyte over time effect
+              random = list(Subject.ID = ~1), # follow each pt
+    family = gaussian(), data = Alldata.tem)
+
+    aa = summary(model$gam)
+    pvalues = c(print(i), aa$pTerms.table[1,"p-value"], aa$s.table[2,"p-value"])
+      
+ res.gam = rbind(res.gam, pvalues)  }   
+
+      
+colnames(res.gam) = c("analyte", "pvalue_overall", "pvalue_trend") 
+# res.gam$Analyte <- (bio.filt)
+
+View(res.gam)
+  
+```
+
+```{r}
+# create empty variables
+df.used <- list()
+gam.models <- list()
+for.preds <- list()
+gam.sumrs <- list()
+pvals.bline <- list()
+pvals.traj <- list()
+res.gam.ls <- list()
+
+
+
+# looping thru the analyte names
+for(i in colnames(master.lmm.lp1[,5:21])) {
+
+  # selecting one analyte
+  Alldata.tem = data.frame(master.lmm.lp1, x = master.lmm.lp1[,i] %>% as.numeric)
+  df.used[[i]] <- Alldata.tem
+  names(df.used[i]) <- print(i)
+
+  model= gamm(x ~ Treatment +
+    s(timepoint, bs = "cr", k = 5) + # check timepoint effect
+      s(timepoint, by=Treatment, bs = "cr", k = 5), # check analyte over time effect
+              random = list(Subject.ID = ~1), # follow each pt
+    family = gaussian(), data = Alldata.tem)
+  gam.models[[i]] <- model
+  names(gam.models[i]) <- print(i)
+  
+  for.preds[[i]] <- model$gam
+  names(for.preds[i]) <- print(i)
+
+    aa = summary(model$gam)
+    gam.sumrs[[i]] <- aa
+    names(gam.sumrs[i]) <- print(i)
+
+    pvals.bline[[i]] <- aa$pTerms.table[1,"p-value"]
+    names(pvals.bline[i]) <- print(i)
+
+    pvals.traj[[i]] <- aa$s.table[2,"p-value"]
+    names(pvals.traj[i]) <- print(i)
+
+    res.gam.ls[[i]] <- data.frame(Analyte = i,
+                          Baseline.Estimate = aa$pTerms.table[1,"p-value"],
+                          Trajectory = aa$s.table[2,"p-value"])
+    
+    # pvalues = c(aa$pTerms.table[1,"p-value"], aa$s.table[2,"p-value"])
+      # res.gam.df = rbind(res.gam.df, pvalues)  
+}
+
+# combine all results to make my one result df
+res.gam.df <- bind_rows(res.gam.ls)
+
+View(res.gam.df)
+      
+# colnames(res.gam) = c("analyte", "pvalue_overall", "pvalue_trend") 
+# res.gam$Analyte <- (bio.filt)
+
+```
+
+```{r}
+sink("250506_BIO_gam.summaries.csv")
+gam.sumrs
+sink()
+```
+
+```{r}
+# generate the iteratively named functions
+# 1 outcome and 1 predictor at a time
+## I can't write a loop for the actual models, but I can write a loop to construct all of them and then paste
+
+# analytes <- colnames(master.lmm.lp1[,5:21])
+
+sink("250506_BIO_GAMM.lp1.loop.csv")
+
+# Loop through each combination
+for (l in seq_along(analytes)) {
+  i <- analytes[[l]]
+
+    # get the analyte df
+   cat(paste0(
+    #  "df.", i, " <- data.frame(master.lmm.lp1, x.", i, 
+    #           " = master.lmm.lp1[,'", i, "'] %>% as.numeric)", "\n\n",
+    # # add to a list
+    # "all.dfs <- append(all.dfs, list(df.", i, "))", "\n",
+    # "names(all.dfs)[length(all.dfs)] <- 'df.", i, "'", "\n\n",
+              
+    # fit the model
+    "model.", i, " <- gamm(", i, "~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)", "\n\n",
+    # add to a list
+    "all.models <- append(all.models, list(model.", i, "))", "\n",
+    "names(all.models)[length(all.models)] <- 'model.", i, "'", "\n\n",
+    
+    # get the summaries
+    "aa.", i, " <- summary(model.", i, "$gam)", "\n\n", 
+    # add to a list
+    "all.summaries <- append(all.summaries, list(aa.", i, "))", "\n",
+    "names(all.summaries)[length(all.summaries)] <- 'aa.", i, "'", "\n\n",
+
+    # get the pvals
+    "pvals.bline.", i, " <- aa.", i, "$pTerms.table[1,'p-value']", "\n",
+    "pvals.traj.", i, " <- aa.", i, "$s.table[2,'p-value']", "\n",
+    
+    # add to a df
+    "gam.pvals.", i, " <- data.frame(Analyte = '", i, 
+    "', Baseline.Estimate = pvals.bline.", i, 
+    ", Trajectory = pvals.traj.", i, ")", "\n\n",
+    # add to a list
+    "all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.", i, 
+    "))", "\n", "names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.", 
+    i, "'", "\n\n",
+    
+    # make predictions df
+    "pred.", i, " <- predict(model.", i, "$gam, newdata = master.lmm.lp1",
+                       ", type = 'response', se.fit = TRUE)", "\n\n",
+    # add to a list
+    "all.pred.dfs <- append(all.pred.dfs, list(pred.", i, 
+    "))", "\n", "names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.", 
+    i, "'", "\n\n"
+    
+    ))
+}
+
+
+sink()
+```
+
+```{r}
+all.dfs <- list()
+all.models <- list()
+all.summaries <- list()
+all.gam.pvals <- list()
+all.pred.dfs <- list()
+
+```
+
+
+```{r}
+model.IFNg <- gamm(IFNg~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IFNg))
+names(all.models)[length(all.models)] <- 'model.IFNg'
+
+aa.IFNg <- summary(model.IFNg$gam)
+
+all.summaries <- append(all.summaries, list(aa.IFNg))
+names(all.summaries)[length(all.summaries)] <- 'aa.IFNg'
+
+pvals.bline.IFNg <- aa.IFNg$pTerms.table[1,'p-value']
+pvals.traj.IFNg <- aa.IFNg$s.table[2,'p-value']
+gam.pvals.IFNg <- data.frame(Analyte = 'IFNg', Baseline.Estimate = pvals.bline.IFNg, Trajectory = pvals.traj.IFNg)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IFNg))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IFNg'
+
+## this is the same as the whole df cuz the model specifies
+# pred.IFNg <- predict(model.IFNg$gam, 
+#                      newdata = master.lmm.lp1[,c("Subject.ID", "timepoint",
+#                                                 "Treatment", "IFNg")], 
+#                      type = 'response', se.fit = TRUE)
+
+pred.IFNg <- predict(model.IFNg$gam, 
+                      newdata = master.lmm.lp1, 
+                      type = 'response', se.fit = TRUE)
+
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IFNg))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IFNg'
+
+model.IL.1b <- gamm(IL.1b~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.1b))
+names(all.models)[length(all.models)] <- 'model.IL.1b'
+
+aa.IL.1b <- summary(model.IL.1b$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.1b))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.1b'
+
+pvals.bline.IL.1b <- aa.IL.1b$pTerms.table[1,'p-value']
+pvals.traj.IL.1b <- aa.IL.1b$s.table[2,'p-value']
+gam.pvals.IL.1b <- data.frame(Analyte = 'IL.1b', Baseline.Estimate = pvals.bline.IL.1b, Trajectory = pvals.traj.IL.1b)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.1b))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.1b'
+
+pred.IL.1b <- predict(model.IL.1b$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.1b))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.1b'
+
+model.IL.2 <- gamm(IL.2~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.2))
+names(all.models)[length(all.models)] <- 'model.IL.2'
+
+aa.IL.2 <- summary(model.IL.2$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.2))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.2'
+
+pvals.bline.IL.2 <- aa.IL.2$pTerms.table[1,'p-value']
+pvals.traj.IL.2 <- aa.IL.2$s.table[2,'p-value']
+gam.pvals.IL.2 <- data.frame(Analyte = 'IL.2', Baseline.Estimate = pvals.bline.IL.2, Trajectory = pvals.traj.IL.2)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.2))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.2'
+
+pred.IL.2 <- predict(model.IL.2$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.2))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.2'
+
+model.IL.4 <- gamm(IL.4~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.4))
+names(all.models)[length(all.models)] <- 'model.IL.4'
+
+aa.IL.4 <- summary(model.IL.4$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.4))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.4'
+
+pvals.bline.IL.4 <- aa.IL.4$pTerms.table[1,'p-value']
+pvals.traj.IL.4 <- aa.IL.4$s.table[2,'p-value']
+gam.pvals.IL.4 <- data.frame(Analyte = 'IL.4', Baseline.Estimate = pvals.bline.IL.4, Trajectory = pvals.traj.IL.4)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.4))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.4'
+
+pred.IL.4 <- predict(model.IL.4$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.4))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.4'
+
+model.IL.6 <- gamm(IL.6~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.6))
+names(all.models)[length(all.models)] <- 'model.IL.6'
+
+aa.IL.6 <- summary(model.IL.6$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.6))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.6'
+
+pvals.bline.IL.6 <- aa.IL.6$pTerms.table[1,'p-value']
+pvals.traj.IL.6 <- aa.IL.6$s.table[2,'p-value']
+gam.pvals.IL.6 <- data.frame(Analyte = 'IL.6', Baseline.Estimate = pvals.bline.IL.6, Trajectory = pvals.traj.IL.6)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.6))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.6'
+
+pred.IL.6 <- predict(model.IL.6$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.6))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.6'
+
+model.IL.8 <- gamm(IL.8~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.8))
+names(all.models)[length(all.models)] <- 'model.IL.8'
+
+aa.IL.8 <- summary(model.IL.8$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.8))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.8'
+
+pvals.bline.IL.8 <- aa.IL.8$pTerms.table[1,'p-value']
+pvals.traj.IL.8 <- aa.IL.8$s.table[2,'p-value']
+gam.pvals.IL.8 <- data.frame(Analyte = 'IL.8', Baseline.Estimate = pvals.bline.IL.8, Trajectory = pvals.traj.IL.8)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.8))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.8'
+
+pred.IL.8 <- predict(model.IL.8$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.8))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.8'
+
+model.IL.10 <- gamm(IL.10~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.10))
+names(all.models)[length(all.models)] <- 'model.IL.10'
+
+aa.IL.10 <- summary(model.IL.10$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.10))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.10'
+
+pvals.bline.IL.10 <- aa.IL.10$pTerms.table[1,'p-value']
+pvals.traj.IL.10 <- aa.IL.10$s.table[2,'p-value']
+gam.pvals.IL.10 <- data.frame(Analyte = 'IL.10', Baseline.Estimate = pvals.bline.IL.10, Trajectory = pvals.traj.IL.10)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.10))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.10'
+
+pred.IL.10 <- predict(model.IL.10$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.10))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.10'
+
+model.MCP.1 <- gamm(MCP.1~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.MCP.1))
+names(all.models)[length(all.models)] <- 'model.MCP.1'
+
+aa.MCP.1 <- summary(model.MCP.1$gam)
+
+all.summaries <- append(all.summaries, list(aa.MCP.1))
+names(all.summaries)[length(all.summaries)] <- 'aa.MCP.1'
+
+pvals.bline.MCP.1 <- aa.MCP.1$pTerms.table[1,'p-value']
+pvals.traj.MCP.1 <- aa.MCP.1$s.table[2,'p-value']
+gam.pvals.MCP.1 <- data.frame(Analyte = 'MCP.1', Baseline.Estimate = pvals.bline.MCP.1, Trajectory = pvals.traj.MCP.1)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.MCP.1))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.MCP.1'
+
+pred.MCP.1 <- predict(model.MCP.1$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.MCP.1))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.MCP.1'
+
+model.TNF.a <- gamm(TNF.a~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.TNF.a))
+names(all.models)[length(all.models)] <- 'model.TNF.a'
+
+aa.TNF.a <- summary(model.TNF.a$gam)
+
+all.summaries <- append(all.summaries, list(aa.TNF.a))
+names(all.summaries)[length(all.summaries)] <- 'aa.TNF.a'
+
+pvals.bline.TNF.a <- aa.TNF.a$pTerms.table[1,'p-value']
+pvals.traj.TNF.a <- aa.TNF.a$s.table[2,'p-value']
+gam.pvals.TNF.a <- data.frame(Analyte = 'TNF.a', Baseline.Estimate = pvals.bline.TNF.a, Trajectory = pvals.traj.TNF.a)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.TNF.a))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.TNF.a'
+
+pred.TNF.a <- predict(model.TNF.a$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.TNF.a))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.TNF.a'
+
+model.TGFβ1 <- gamm(TGFβ1~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.TGFβ1))
+names(all.models)[length(all.models)] <- 'model.TGFβ1'
+
+aa.TGFβ1 <- summary(model.TGFβ1$gam)
+
+all.summaries <- append(all.summaries, list(aa.TGFβ1))
+names(all.summaries)[length(all.summaries)] <- 'aa.TGFβ1'
+
+pvals.bline.TGFβ1 <- aa.TGFβ1$pTerms.table[1,'p-value']
+pvals.traj.TGFβ1 <- aa.TGFβ1$s.table[2,'p-value']
+gam.pvals.TGFβ1 <- data.frame(Analyte = 'TGFβ1', Baseline.Estimate = pvals.bline.TGFβ1, Trajectory = pvals.traj.TGFβ1)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.TGFβ1))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.TGFβ1'
+
+pred.TGFβ1 <- predict(model.TGFβ1$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.TGFβ1))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.TGFβ1'
+
+model.TGFβ2 <- gamm(TGFβ2~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.TGFβ2))
+names(all.models)[length(all.models)] <- 'model.TGFβ2'
+
+aa.TGFβ2 <- summary(model.TGFβ2$gam)
+
+all.summaries <- append(all.summaries, list(aa.TGFβ2))
+names(all.summaries)[length(all.summaries)] <- 'aa.TGFβ2'
+
+pvals.bline.TGFβ2 <- aa.TGFβ2$pTerms.table[1,'p-value']
+pvals.traj.TGFβ2 <- aa.TGFβ2$s.table[2,'p-value']
+gam.pvals.TGFβ2 <- data.frame(Analyte = 'TGFβ2', Baseline.Estimate = pvals.bline.TGFβ2, Trajectory = pvals.traj.TGFβ2)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.TGFβ2))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.TGFβ2'
+
+pred.TGFβ2 <- predict(model.TGFβ2$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.TGFβ2))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.TGFβ2'
+
+model.S100A9 <- gamm(S100A9~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.S100A9))
+names(all.models)[length(all.models)] <- 'model.S100A9'
+
+aa.S100A9 <- summary(model.S100A9$gam)
+
+all.summaries <- append(all.summaries, list(aa.S100A9))
+names(all.summaries)[length(all.summaries)] <- 'aa.S100A9'
+
+pvals.bline.S100A9 <- aa.S100A9$pTerms.table[1,'p-value']
+pvals.traj.S100A9 <- aa.S100A9$s.table[2,'p-value']
+gam.pvals.S100A9 <- data.frame(Analyte = 'S100A9', Baseline.Estimate = pvals.bline.S100A9, Trajectory = pvals.traj.S100A9)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.S100A9))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.S100A9'
+
+pred.S100A9 <- predict(model.S100A9$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.S100A9))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.S100A9'
+
+model.IL.18BPa <- gamm(IL.18BPa~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.IL.18BPa))
+names(all.models)[length(all.models)] <- 'model.IL.18BPa'
+
+aa.IL.18BPa <- summary(model.IL.18BPa$gam)
+
+all.summaries <- append(all.summaries, list(aa.IL.18BPa))
+names(all.summaries)[length(all.summaries)] <- 'aa.IL.18BPa'
+
+pvals.bline.IL.18BPa <- aa.IL.18BPa$pTerms.table[1,'p-value']
+pvals.traj.IL.18BPa <- aa.IL.18BPa$s.table[2,'p-value']
+gam.pvals.IL.18BPa <- data.frame(Analyte = 'IL.18BPa', Baseline.Estimate = pvals.bline.IL.18BPa, Trajectory = pvals.traj.IL.18BPa)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.IL.18BPa))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.IL.18BPa'
+
+pred.IL.18BPa <- predict(model.IL.18BPa$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.IL.18BPa))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.IL.18BPa'
+
+model.COMP <- gamm(COMP~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.COMP))
+names(all.models)[length(all.models)] <- 'model.COMP'
+
+aa.COMP <- summary(model.COMP$gam)
+
+all.summaries <- append(all.summaries, list(aa.COMP))
+names(all.summaries)[length(all.summaries)] <- 'aa.COMP'
+
+pvals.bline.COMP <- aa.COMP$pTerms.table[1,'p-value']
+pvals.traj.COMP <- aa.COMP$s.table[2,'p-value']
+gam.pvals.COMP <- data.frame(Analyte = 'COMP', Baseline.Estimate = pvals.bline.COMP, Trajectory = pvals.traj.COMP)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.COMP))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.COMP'
+
+pred.COMP <- predict(model.COMP$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.COMP))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.COMP'
+
+model.Uteroglobin <- gamm(Uteroglobin~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.Uteroglobin))
+names(all.models)[length(all.models)] <- 'model.Uteroglobin'
+
+aa.Uteroglobin <- summary(model.Uteroglobin$gam)
+
+all.summaries <- append(all.summaries, list(aa.Uteroglobin))
+names(all.summaries)[length(all.summaries)] <- 'aa.Uteroglobin'
+
+pvals.bline.Uteroglobin <- aa.Uteroglobin$pTerms.table[1,'p-value']
+pvals.traj.Uteroglobin <- aa.Uteroglobin$s.table[2,'p-value']
+gam.pvals.Uteroglobin <- data.frame(Analyte = 'Uteroglobin', Baseline.Estimate = pvals.bline.Uteroglobin, Trajectory = pvals.traj.Uteroglobin)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.Uteroglobin))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.Uteroglobin'
+
+pred.Uteroglobin <- predict(model.Uteroglobin$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.Uteroglobin))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.Uteroglobin'
+
+model.Adiponectin <- gamm(Adiponectin~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.Adiponectin))
+names(all.models)[length(all.models)] <- 'model.Adiponectin'
+
+aa.Adiponectin <- summary(model.Adiponectin$gam)
+
+all.summaries <- append(all.summaries, list(aa.Adiponectin))
+names(all.summaries)[length(all.summaries)] <- 'aa.Adiponectin'
+
+pvals.bline.Adiponectin <- aa.Adiponectin$pTerms.table[1,'p-value']
+pvals.traj.Adiponectin <- aa.Adiponectin$s.table[2,'p-value']
+gam.pvals.Adiponectin <- data.frame(Analyte = 'Adiponectin', Baseline.Estimate = pvals.bline.Adiponectin, Trajectory = pvals.traj.Adiponectin)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.Adiponectin))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.Adiponectin'
+
+pred.Adiponectin <- predict(model.Adiponectin$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.Adiponectin))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.Adiponectin'
+
+model.PAI.1..total. <- gamm(PAI.1..total.~ Treatment + 
+                s(timepoint, bs = 'cr', k = 5) + # check timepoint effect
+                s(timepoint, by=Treatment, bs = 'cr', k = 5), # check analyte over time effect
+            random = list(Subject.ID = ~1), # follow each pt
+            family = gaussian(), data = master.lmm.lp1)
+
+all.models <- append(all.models, list(model.PAI.1..total.))
+names(all.models)[length(all.models)] <- 'model.PAI.1..total.'
+
+aa.PAI.1..total. <- summary(model.PAI.1..total.$gam)
+
+all.summaries <- append(all.summaries, list(aa.PAI.1..total.))
+names(all.summaries)[length(all.summaries)] <- 'aa.PAI.1..total.'
+
+pvals.bline.PAI.1..total. <- aa.PAI.1..total.$pTerms.table[1,'p-value']
+pvals.traj.PAI.1..total. <- aa.PAI.1..total.$s.table[2,'p-value']
+gam.pvals.PAI.1..total. <- data.frame(Analyte = 'PAI.1..total.', Baseline.Estimate = pvals.bline.PAI.1..total., Trajectory = pvals.traj.PAI.1..total.)
+
+all.gam.pvals <- append(all.gam.pvals, list(gam.pvals.PAI.1..total.))
+names(all.gam.pvals)[length(all.gam.pvals)] <- 'gam.pvals.PAI.1..total.'
+
+pred.PAI.1..total. <- predict(model.PAI.1..total.$gam, newdata = master.lmm.lp1, type = 'response', se.fit = TRUE)
+
+all.pred.dfs <- append(all.pred.dfs, list(pred.PAI.1..total.))
+names(all.pred.dfs)[length(all.pred.dfs)] <- 'pred.PAI.1..total.'
+
+
+```
+
+
+
+```{r}
+all.gam.pvals.df <- bind_rows(all.gam.pvals)
+head(all.gam.pvals.df)
+```
+
+
+```{r}
+sink("250506_BIO_gam.summaries.noLoop.csv")
+all.summaries
+sink()
+```
+
+
+```{r}
+# Illustration: you can also use stat_smooth function with method="gam" argument.
+```
+
+```{r}
+pdf(paste0("250327_BIO300_Boxplots.All.pdf"), 
+    height = 10, width = 20)
+ggboxplot(all.bios, x="Treatment",
+          y="Value", color = "Treatment", 
+          add="jitter")+
+  # geom_point() +
+  scale_color_manual(values = c("Placebo" = "limegreen",
+                                "BIO 300 Oral Suspension" = "lightslateblue")) +
+  #                    # labels = c("0" = "No",
+  #                    #            "1" = "Yes")) +
+  
+  #add p values
+  stat_compare_means(comparisons = comp, aes(label = paste0("p =", ..p.format..)),
+                     method = "wilcox.test", label.x=1.5, vjust=0.2, size = 5) +
+  # Wilcox - wilcox.test() - non parametric, compare only 2 groups, need to specify comparisons first
+  
+  # ##add p values - change based on multiple or just 2
+  # stat_compare_means(aes(label = paste0("p = ", ..p.format..)),
+  #                    method = "kruskal.test", label.x=1.5,vjust=0.7,
+  #                    size=7,face="bold") +
+  # ## Kruskal-Wallis - kruskal.test() - Compare multiple groups (non-parametric)
+  # 
+  
+  # #Remove if you dont want log10 on y axis
+  # scale_y_log10(breaks=trans_breaks('log10', function(x) 10^x), labels=trans_format('log10', math_format(10^.x)))+
+  scale_y_continuous(trans='log10') +
+  
+
+  #.~X means facet in columns 
+  facet_wrap(.~Analyte, scales="free", nrow = 2)+
+  
+  theme(legend.position = "left") +labs(x='',y='Log10 Levels (pg/mL)') + 
+  theme(plot.title = element_text(size=20, face="bold", hjust=0.5),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size=10, face="bold"),
+    axis.title.x = element_text(size=12, face="bold"),
+    axis.title.y = element_text(size=12, face="bold"),
+    strip.text.x = element_text(size=20, face="bold"),
+    strip.text.y = element_text(size=12, face="bold"),
+    # legend.title = element_text(size=14, face = "bold"),
+    # legend.key.size = unit(2, 'cm'),
+    legend.title = element_blank(),
+    legend.text = element_text(size=18),
+    legend.position = "bottom") +
+  ggtitle("Whole Cohort")
+
+
+dev.off()
+```
+
+
+```{r}
+# ## graphing it: use ggeffects plot(), automatically facets by hosp
+# pdf("250310_PASC_LMM.facet.pdf")
+# plot(dat.all, 
+#      colors = c("Respiratory" = "lightskyblue",
+#                 "Neurologic" = "lightslateblue",
+#                 "Indiscriminate Symptoms" = "indianred2",
+#                 "No Symptoms" = "gray17"),
+#      one_plot = TRUE)
+# dev.off()
+
+## can use ggplot, calling the variables As They Are Listed in the
+# prediction model, so it is not the same names as I have, use str(dat.all) to see the names
+
+pdf("250506_BIO.GAMM.lp1.all.slopes.noLabls.pdf", width = 68, height = 25)
+
+ggplot(all.bios, aes(x = Treatment, y = Value, color = Treatment)) + 
+    # geom_line(size = 1) + 
+    geom_smooth(aes(group=Treatment, color=Treatment),
+              method="gam", se=TRUE,     # linear regression model w.o confidence intervals
+              alpha=0.2,level=0.8,size=1.4)+
+    # geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), 
+    #             color = NA, 
+    #             alpha = 0.12) +
+    
+    # geom_text(aes(x = x.pos, y = y.pos1), 
+    #           label = paste("Slope = ", slope_placebo), 
+    #           color = "limegreen", size = 6, show.legend = FALSE) +
+    # 
+    # geom_text(aes(x = x.pos, y = y.pos2), 
+    #           label = paste("Slope = ", slope_bio), 
+    #           color = "lightslateblue", size = 6, show.legend = FALSE) +
+    # geom_text(data = label_positions,
+    #       aes(x = x, y = predicted, label = slope_label),
+    #       hjust = -0.1,  # adjust if needed for space
+    #       vjust = 2.3,
+    #       size = 8,
+    #       show.legend = FALSE) +
+    
+    scale_color_manual(values = c("Placebo" = "limegreen",
+                                  "BIO 300 Oral Suspension" = "lightslateblue")) +
+    # scale_fill_manual(values = c("Placebo" = "limegreen",
+    #                              "BIO 300 Oral Suspension" = "lightslateblue")) +
+    # labs(x = "Timepoint (Weeks)", y = "Predicted Analyte Values", 
+         # labs(title = gsub("\\.", "-", substr(names(dat.all.lp1)[i], 5, nchar(names(dat.all.lp1)[i])))) + 
+    #.~X means facet in columns 
+  facet_wrap(.~Analyte, scales="free", nrow = 2)+
+  
+    theme(plot.title = element_text(size = 27, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 22, face = "bold"),
+          axis.text.y = element_text(size = 22, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          # legend.title = element_blank(),
+          # legend.text = element_text(size = 15, face = "bold"),
+          # legend.key.size = unit(1.3, 'cm'),
+          legend.position = "none")
+
+
+# grid.arrange(grobs = plot_list, nrow = 3)
+
+dev.off()
+
+```
+
+
+```{r}
+## can use ggplot, calling the variables As They Are Listed in the
+# prediction model, so it is not the same names as I have, use str(dat.all) to see the names
+
+pdf("250506_BIO.LMM.lp1.all.slopes.noLabls.pdf", width = 68, height = 25)
+
+plot_list <- list()
+
+for(i in seq_along(all.pred.dfs)){
+  
+  to.plot <- all.pred.dfs[[i]]
+  # slope_tr <- summary(slope_trends.all.lp1[[i]])
+  # slope_tr$timepoint.trend <- round(slope_tr$timepoint.trend, 4)
+  # 
+  # # Extract slopes for specific treatments
+  # slope_placebo <- slope_tr$timepoint.trend[slope_tr$Treatment == "Placebo"]
+  # slope_bio <- slope_tr$timepoint.trend[slope_tr$Treatment == "BIO 300 Oral Suspension"]
+  
+  # setting axes for slope labels
+# Identify the first timepoint per group
+# label_positions <- do.call(rbind, lapply(split(to.plot, to.plot$group), function(df) {
+#   df_first <- df[which.min(df$x), ]
+#   
+#   slope <- if (df_first$group == "Placebo") {
+#     slope_tr$timepoint.trend[slope_tr$Treatment == "Placebo"]
+#   } else {
+#     slope_tr$timepoint.trend[slope_tr$Treatment == "BIO 300 Oral Suspension"]
+#   }
+#   
+#   df_first$slope_label <- paste("Slope =", slope)
+#   return(df_first)
+# }))
+
+
+
+
+  myplot <- ggplot(to.plot, aes(x = x, y = predicted, color = group)) + 
+    geom_line(size = 1) + 
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), 
+                color = NA, 
+                alpha = 0.12) +
+    
+    # geom_text(aes(x = x.pos, y = y.pos1), 
+    #           label = paste("Slope = ", slope_placebo), 
+    #           color = "limegreen", size = 6, show.legend = FALSE) +
+    # 
+    # geom_text(aes(x = x.pos, y = y.pos2), 
+    #           label = paste("Slope = ", slope_bio), 
+    #           color = "lightslateblue", size = 6, show.legend = FALSE) +
+    geom_text(data = label_positions,
+          aes(x = x, y = predicted, label = slope_label),
+          hjust = -0.1,  # adjust if needed for space
+          vjust = 2.3,
+          size = 8,
+          show.legend = FALSE) +
+    
+    scale_color_manual(values = c("Placebo" = "limegreen",
+                                  "BIO 300 Oral Suspension" = "lightslateblue")) +
+    scale_fill_manual(values = c("Placebo" = "limegreen",
+                                 "BIO 300 Oral Suspension" = "lightslateblue")) +
+    # labs(x = "Timepoint (Weeks)", y = "Predicted Analyte Values", 
+         labs(title = gsub("\\.", "-", substr(names(dat.all.lp1)[i], 5, nchar(names(dat.all.lp1)[i])))) + 
+    theme(plot.title = element_text(size = 27, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 22, face = "bold"),
+          axis.text.y = element_text(size = 22, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          # legend.title = element_blank(),
+          # legend.text = element_text(size = 15, face = "bold"),
+          # legend.key.size = unit(1.3, 'cm'),
+          legend.position = "none")
+
+  plot_list[[i]] <- myplot
+}
+
+grid.arrange(grobs = plot_list, nrow = 3)
+
+dev.off()
+```
+
+
+```{r}
+pdf("250506_BIO.GAM.lp1.all.lines.cgpt.pdf", width = 68, height = 25)
+
+plot_list <- list()
+
+for(i in seq_along(all.pred.dfs)) {
+  
+  pred_df <- all.pred.dfs[[i]]
+  analyte_name <- gsub("\\.", "-", substr(names(all.pred.dfs)[i], 6, nchar(names(all.pred.dfs)[i])))
+  pred_df$Analyte <- analyte_name
+  
+  # Add original data info
+  plot_df <- cbind(master.lmm.lp1, 
+                   predicted = pred_df$fit, 
+                   conf.low = pred_df$fit - 1.96 * pred_df$se.fit, 
+                   conf.high = pred_df$fit + 1.96 * pred_df$se.fit)
+
+  plot_df$group <- plot_df$Treatment  # or any group label you used
+  
+  # Get corresponding p-values
+  pvals_df <- all.gam.pvals[[i]]
+  label_text <- paste0("Baseline p = ", signif(pvals_df$Baseline.Estimate, 3), 
+                       "\nTrajectory p = ", signif(pvals_df$Trajectory, 3))
+  
+  # Find label positions (at min timepoint per group)
+  label_positions <- do.call(rbind, lapply(split(plot_df, plot_df$group), function(df) {
+    df_first <- df[which.min(df$timepoint), ]
+    df_first$label_text <- label_text
+    return(df_first)
+  }))
+  
+  myplot <- ggplot(plot_df, aes(x = timepoint, y = predicted, color = group)) + 
+    geom_line(size = 1) + 
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), 
+                alpha = 0.15, color = NA) +
+    geom_text(data = label_positions,
+              aes(label = label_text),
+              hjust = -0.1, vjust = 2.3, size = 8, show.legend = FALSE) +
+    scale_color_manual(values = c("Placebo" = "limegreen",
+                                  "BIO 300 Oral Suspension" = "lightslateblue")) +
+    scale_fill_manual(values = c("Placebo" = "limegreen",
+                                 "BIO 300 Oral Suspension" = "lightslateblue")) +
+    labs(title = analyte_name) +
+    theme(plot.title = element_text(size = 27, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 22, face = "bold"),
+          axis.text.y = element_text(size = 22, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          legend.position = "none")
+
+  plot_list[[i]] <- myplot
+}
+
+grid.arrange(grobs = plot_list, nrow = 2)
+dev.off()
+
+```
+
+```{r}
+pdf("250506_BIO.GAM.lp1.all.lines.pvalsOnce.pdf", width = 68, height = 25)
+
+plot_list <- list()
+
+for(i in seq_along(all.pred.dfs)) {
+  
+  pred_df <- all.pred.dfs[[i]]
+  analyte_name <- gsub("\\.", "-", substr(names(all.pred.dfs)[i], 6, nchar(names(all.pred.dfs)[i])))
+  pred_df$Analyte <- analyte_name
+  
+  # Merge prediction with data
+  plot_df <- cbind(master.lmm.lp1, 
+                   predicted = pred_df$fit, 
+                   conf.low = pred_df$fit - 1.96 * pred_df$se.fit, 
+                   conf.high = pred_df$fit + 1.96 * pred_df$se.fit)
+
+  plot_df$group <- plot_df$Treatment
+  
+  # Extract p-values and format label
+  pvals_df <- all.gam.pvals[[i]]
+  label_text <- paste0("Baseline p = ", signif(pvals_df$Baseline.Estimate, 3), 
+                       "\nTrajectory p = ", signif(pvals_df$Trajectory, 3))
+  
+  # Pick a single point (earliest timepoint) for label
+  label_position <- plot_df[which.min(plot_df$timepoint), ]
+  label_position$label_text <- label_text
+
+  myplot <- ggplot(plot_df, aes(x = timepoint, y = predicted, color = group)) + 
+    geom_line(size = 1) + 
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), 
+                alpha = 0.15, color = NA) +
+    geom_text(data = label_position,
+              aes(label = label_text),
+              color = "black",
+              hjust = -0.1, vjust = 2.3, size = 8, show.legend = FALSE) +
+    scale_color_manual(values = c("Placebo" = "limegreen",
+                                  "BIO 300 Oral Suspension" = "lightslateblue")) +
+    scale_fill_manual(values = c("Placebo" = "limegreen",
+                                 "BIO 300 Oral Suspension" = "lightslateblue")) +
+    labs(title = analyte_name) +
+    theme(plot.title = element_text(size = 27, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 22, face = "bold"),
+          axis.text.y = element_text(size = 22, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          legend.position = "none")
+
+  plot_list[[i]] <- myplot
+}
+
+grid.arrange(grobs = plot_list, nrow = 4)
+dev.off()
+
+```
+
